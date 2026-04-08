@@ -1,0 +1,225 @@
+══════════════════════════════════════════════════════════════════════
+  STM32F746G-DISCO  —  Pin Connections using ARDUINO LABELS
+  All connections shown as: Arduino label  (STM32 internal for CubeMX)
+══════════════════════════════════════════════════════════════════════
+
+  How to read this file:
+    Left column  = what you PHYSICALLY SEE on the board (A0, D3, etc.)
+    Parentheses  = what to type in STM32CubeMX when configuring
+
+══════════════════════════════════════════════════════════════════════
+  Arduino label → STM32 pin reference  (full map for this board)
+══════════════════════════════════════════════════════════════════════
+
+  Arduino label  │  STM32 pin  │  Main function options
+  ─────────────  │  ─────────  │  ──────────────────────────────────
+  A0             │  PA0        │  ADC / TIM5_CH1 / TIM2_CH1
+  A1             │  PA1        │  ADC / TIM5_CH2 / TIM2_CH2
+  A2             │  PA3        │  ADC / TIM2_CH4
+  A3             │  PC4        │  ADC only
+  A4             │  PC5        │  ADC only
+  A5             │  PB1        │  ADC / TIM3_CH4
+  ─────────────  │  ─────────  │  ──────────────────────────────────
+  D0  (RX)       │  PC7        │  USART6_RX / TIM3_CH2 / TIM8_CH2
+  D1  (TX)       │  PC6        │  USART6_TX / TIM3_CH1 / TIM8_CH1
+  D2             │  PG6        │  GPIO / EXTI
+  D3             │  PB4        │  TIM3_CH1
+  D4             │  PG7        │  GPIO
+  D5             │  PI0        │  TIM5_CH4
+  D6             │  PH6        │  TIM12_CH1
+  D7             │  PI3        │  GPIO
+  D8             │  PI2        │  GPIO
+  D9             │  PA15       │  TIM2_CH1
+  D10            │  PA8        │  TIM1_CH1
+  D11            │  PB15       │  SPI2_MOSI / TIM12_CH2
+  D12            │  PB14       │  SPI2_MISO
+  D13            │  PI1        │  SPI2_SCK   ← NOT usable for encoder
+  ─────────────  │  ─────────  │  ──────────────────────────────────
+  SDA            │  PB9        │  I2C1_SDA   ← dedicated I2C pin
+  SCL            │  PB8        │  I2C1_SCL   ← dedicated I2C pin
+  (These are extra pins on the left-side connector, labeled SDA/SCL)
+
+══════════════════════════════════════════════════════════════════════
+  1.  ICM-20948 IMU  →  I2C (SDA / SCL pins)
+══════════════════════════════════════════════════════════════════════
+
+  ICM-20948 pin  │  Connect to board label  │  STM32 (CubeMX)
+  ─────────────  │  ──────────────────────  │  ──────────────────
+  VDD  (3.3V)    │  3V3  (power pin)        │  —
+  GND            │  GND                     │  —
+  SCL            │  SCL                     │  PB8  I2C1_SCL
+  SDA            │  SDA                     │  PB9  I2C1_SDA
+  AD0            │  GND                     │  I2C addr = 0x68
+  INT            │  D2                      │  PG6  GPIO_EXTI6
+  FSYNC          │  GND                     │  —
+
+  CubeMX settings:
+    Peripheral    : I2C1
+    Speed Mode    : Fast Mode  400 kHz
+    SCL pin       : PB8
+    SDA pin       : PB9
+
+  ⚠  The SDA and SCL pins on STM32F746G-DISCO are SEPARATE from
+     A0-A5 and D0-D13. Look for two pins labeled SDA and SCL on
+     the left-side Arduino connector next to the 3V3/GND pins.
+
+══════════════════════════════════════════════════════════════════════
+  2.  micro-ROS UART  →  D0 / D1  (USB-to-TTL cable to Raspberry Pi)
+══════════════════════════════════════════════════════════════════════
+
+  Board label  │  Cable wire   │  Colour   │  Connect to RPi
+  ───────────  │  ──────────── │  ───────  │  ─────────────────────
+  D0  (RX)     │  TX of cable  │  Green    │  (cable USB end → RPi)
+  D1  (TX)     │  RX of cable  │  White    │  (cable USB end → RPi)
+  GND          │  GND of cable │  Black    │  (cable USB end → RPi)
+               │  VCC of cable │  Red      │  DO NOT CONNECT ✗
+
+  CubeMX settings:
+    Peripheral    : USART6
+    TX pin        : PC6  (= D1)
+    RX pin        : PC7  (= D0)
+    Baud Rate     : 2000000
+    Word Length   : 8 Bits
+    Stop Bits     : 1
+    Parity        : None
+
+  ⚠  Because D0/D1 are used for UART, those same pins CANNOT be
+     used as encoder inputs.  The encoder assignments below avoid D0/D1.
+
+══════════════════════════════════════════════════════════════════════
+  3.  RMCS-3070 Encoders  →  2 hardware timer pairs on Arduino pins
+══════════════════════════════════════════════════════════════════════
+
+  WHY ONLY 2 PAIRS?
+  ─────────────────
+  The STM32F746G-DISCO Arduino header only exposes 2 clean encoder
+  timer pairs (CH1 + CH2 of the same timer, without conflicting with
+  UART or I2C).  For a 4-wheel differential drive robot, 2 encoders
+  (one per side) is SUFFICIENT for SLAM odometry:
+    Left encoder  = average of FL + RL wheels (same shaft or same side)
+    Right encoder = average of FR + RR wheels
+
+  If you later need 4 individual encoders, you will need to use the
+  Morpho connector (CN1/CN2) — see section 4 below.
+
+  ── ENCODER PAIR 1 — LEFT SIDE  (TIM5) ──────────────────────────
+  Board label  │  STM32 pin  │  Timer function
+  ───────────  │  ─────────  │  ──────────────
+  A0           │  PA0        │  TIM5_CH1  (AF2)
+  A1           │  PA1        │  TIM5_CH2  (AF2)
+  GND          │  GND        │  —
+  5V           │  5V pin     │  encoder VCC
+
+  CubeMX settings for TIM5:
+    Combined Channels : Encoder Mode TI1 and TI2
+    Counter Period    : 65535
+    Prescaler         : 0
+    CH1 pin           : PA0  (= A0)
+    CH2 pin           : PA1  (= A1)
+    CH1/CH2 Polarity  : Rising Edge
+    Input Filter      : 4
+
+  ── ENCODER PAIR 2 — RIGHT SIDE  (TIM2) ─────────────────────────
+  Board label  │  STM32 pin  │  Timer function
+  ───────────  │  ─────────  │  ──────────────
+  D9           │  PA15       │  TIM2_CH1  (AF1)
+  A2           │  PA3        │  TIM2_CH4? — see note below ↓
+  GND          │  GND        │  —
+  5V           │  5V pin     │  encoder VCC
+
+  ⚠  NOTE on TIM2 CH2 pin:
+     TIM2_CH2 is on PA1 (= A1) — but A1 is already used by TIM5_CH2.
+     The cleanest available option is to check your specific board:
+       Option A: If your board has PB3 accessible → use PB3 for TIM2_CH2
+                 (PB3 is sometimes exposed on Morpho CN2)
+       Option B: Use TIM1 instead:
+                 D10 (PA8) = TIM1_CH1
+                 The CH2 for TIM1 (PE11) is on Morpho CN1 pin 21
+
+  SIMPLEST WORKING SETUP (what to actually wire):
+  ─────────────────────────────────────────────────
+  Left  encoder : A0 (TIM5_CH1)  +  A1 (TIM5_CH2)
+  Right encoder : D9 (TIM2_CH1)  +  connect TIM2_CH2 via Morpho CN2
+                                     (see section 4)
+
+══════════════════════════════════════════════════════════════════════
+  4.  Morpho connector pins for 2nd encoder CH2 and extra encoders
+══════════════════════════════════════════════════════════════════════
+
+  The STM32F746G-DISCO has 2 large 35-pin headers (CN1 and CN2).
+  These expose ALL STM32 pins and are needed for the missing encoder channels.
+
+  What you need from Morpho connectors:
+
+  Need              │  STM32 pin  │  Morpho connector
+  ─────────────────  │  ─────────  │  ──────────────────
+  TIM2_CH2 (Right)   │  PB3        │  CN2  pin 15
+  TIM3_CH2 (3rd enc) │  PC7  = D0  │  (= D0 on Arduino — already used)
+  TIM4_CH1 (3rd enc) │  PB6        │  CN2  pin 13
+  TIM4_CH2 (3rd enc) │  PB7        │  CN2  pin 11
+  TIM8_CH1 (4th enc) │  PC6  = D1  │  (= D1 on Arduino — already used)
+  TIM3_CH1 (alt)     │  PB4  = D3  │  D3 on Arduino
+
+  For 4 individual encoders (all 4 motors):
+  ─────────────────────────────────────────
+  Motor        │  Timer  │  CH1 (board label)    │  CH2 (board label)
+  ───────────  │  ─────  │  ───────────────────  │  ─────────────────
+  Front-Left   │  TIM5   │  A0  (Arduino)        │  A1  (Arduino)
+  Front-Right  │  TIM2   │  D9  (Arduino)        │  CN2 pin 15  (PB3)
+  Rear-Left    │  TIM4   │  CN2 pin 13  (PB6)    │  CN2 pin 11  (PB7)
+  Rear-Right   │  TIM3   │  D3  (Arduino, PB4)   │  need PB5 or PA7
+                                                    (Morpho CN1/CN2)
+
+══════════════════════════════════════════════════════════════════════
+  5.  Complete wiring summary  (what to actually connect)
+══════════════════════════════════════════════════════════════════════
+
+  BOARD LABEL  │  CONNECT TO           │  PURPOSE
+  ───────────  │  ───────────────────  │  ─────────────────────────
+  SDA          │  ICM-20948 SDA        │  IMU data
+  SCL          │  ICM-20948 SCL        │  IMU clock
+  D2           │  ICM-20948 INT        │  IMU interrupt (optional)
+  3V3          │  ICM-20948 VDD        │  IMU power
+  GND          │  ICM-20948 GND        │  IMU ground
+  ─────────────────────────────────────────────────────────────────
+  D0  (RX)     │  Cable GREEN wire     │  micro-ROS ← RPi
+  D1  (TX)     │  Cable WHITE wire     │  micro-ROS → RPi
+  GND          │  Cable BLACK wire     │  UART common ground
+  (RED wire    │  DO NOT CONNECT)      │
+  ─────────────────────────────────────────────────────────────────
+  A0           │  Left encoder  CH_A   │  Left wheel speed
+  A1           │  Left encoder  CH_B   │  Left wheel direction
+  5V           │  Left encoder  VCC    │  Encoder power
+  GND          │  Left encoder  GND    │
+  ─────────────────────────────────────────────────────────────────
+  D9           │  Right encoder CH_A   │  Right wheel speed
+  CN2 pin 15   │  Right encoder CH_B   │  Right wheel direction
+  5V           │  Right encoder VCC    │
+  GND          │  Right encoder GND    │
+
+══════════════════════════════════════════════════════════════════════
+  6.  CubeMX configuration checklist
+══════════════════════════════════════════════════════════════════════
+
+  Peripheral    │  Pins             │  Settings
+  ───────────   │  ───────────────  │  ───────────────────────────
+  I2C1          │  PB8, PB9         │  Fast Mode 400 kHz
+  USART6        │  PC6(TX), PC7(RX) │  2000000 baud, 8N1
+  TIM5          │  PA0, PA1         │  Encoder Mode TI1+TI2
+  TIM2          │  PA15, PB3        │  Encoder Mode TI1+TI2
+
+  All timers: Counter Period=65535, Prescaler=0, Filter=4
+
+══════════════════════════════════════════════════════════════════════
+  7.  RMCS-3070 encoder wire colours  (standard)
+══════════════════════════════════════════════════════════════════════
+
+  RMCS-3070 encoder cable:
+  Wire colour  │  Connect to
+  ──────────── │  ─────────────────────────────────────────────────
+  Red          │  5V (encoder VCC)
+  Black        │  GND
+  Green        │  CH_A  (encoder channel A → STM32 timer CH1 pin)
+  White        │  CH_B  (encoder channel B → STM32 timer CH2 pin)
+
+══════════════════════════════════════════════════════════════════════
