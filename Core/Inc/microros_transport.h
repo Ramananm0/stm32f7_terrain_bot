@@ -1,9 +1,10 @@
 /**
  * microros_transport.h  —  micro-ROS UART transport declarations
  *
- * UART1:  PA9 = TX   PA10 = RX   2 Mbaud
- * Connect to Raspberry Pi / PC running:
- *   ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyUSB0 -b 2000000
+ * USART6:  D1 (PC6) = TX    D0 (PC7) = RX    2 Mbaud
+ * Physical: Arduino D1 → cable RX (white),  D0 → cable TX (green),  GND → GND (black)
+ * Connect USB end of cable to Raspberry Pi, then run:
+ *   ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/stm32 -b 2000000
  */
 #ifndef MICROROS_TRANSPORT_H
 #define MICROROS_TRANSPORT_H

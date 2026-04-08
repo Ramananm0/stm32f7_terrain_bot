@@ -1,6 +1,6 @@
 /**
  * icm20948.c  —  ICM-20948 driver implementation
- * STM32F746G-DISCO  |  I2C3  |  HAL
+ * STM32F746G-DISCO  |  I2C1  |  SCL=PB8 (Arduino SCL)  SDA=PB9 (Arduino SDA)
  */
 #include "icm20948.h"
 #include <math.h>

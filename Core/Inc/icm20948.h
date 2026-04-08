@@ -1,8 +1,8 @@
 /**
  * icm20948.h  —  ICM-20948 9-axis IMU driver
  * Board  : STM32F746G-DISCO
- * Bus    : I2C3   SCL=PH7  SDA=PH8
- * INT pin: PA2    (EXTI2, optional)
+ * Bus    : I2C1   SCL=PB8 (Arduino SCL pin)  SDA=PB9 (Arduino SDA pin)
+ * INT pin: D2/PG6  (EXTI, optional)
  * AD0    : GND    → I2C address 0x68
  *
  * Sensor config:
