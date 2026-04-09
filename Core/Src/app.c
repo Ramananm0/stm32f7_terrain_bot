@@ -45,6 +45,7 @@
 #include "encoder.h"
 #include "madgwick.h"
 #include "microros_transport.h"
+#include "lcd_display.h"
 #include "main.h"
 
 /* micro-ROS */
@@ -68,6 +69,7 @@ extern TIM_HandleTypeDef  htim2;    /* RIGHT encoder: D9(PA15=CH1) + CN2p15(PB3=
 extern UART_HandleTypeDef huart6;   /* D1(PC6=TX)  D0(PC7=RX)  2 Mbaud               */
 
 /* ── Timing ─────────────────────────────────────────────────────── */
+#define LCD_PUB_PERIOD_MS   100   /*  10 Hz  — LCD refresh            */
 #define IMU_PERIOD_MS       10    /* 100 Hz  — Madgwick update        */
 #define ENC_PERIOD_MS       10    /* 100 Hz  — encoder polling        */
 #define IMU_PUB_PERIOD_MS   10    /* 100 Hz  — /imu/data publish      */
@@ -209,22 +211,26 @@ static void publish_encoders(void)
 /* ── App entry point ────────────────────────────────────────────── */
 void App_Run(void)
 {
-    /* 1. Init ICM-20948 */
+    /* 1. Init LCD */
+    LCD_Display_Init();
+
+    /* 2. Init ICM-20948 */
     if (ICM20948_Init(&hi2c1) != HAL_OK)
         Error_Handler();   /* check wiring — see PIN_CONNECTIONS.txt */
 
-    /* 2. Init encoders */
+    /* 3. Init encoders */
     Encoder_Init(&htim5, &htim2);
 
-    /* 3. Init Madgwick filter  (β=0.033 per Madgwick 2011 §IV-C) */
+    /* 4. Init Madgwick filter  (β=0.033 per Madgwick 2011 §IV-C) */
     Madgwick_Init(&ahrs, MADGWICK_BETA);
 
-    /* 4. Init micro-ROS */
+    /* 5. Init micro-ROS */
     uros_setup();
 
-    /* 5. Gyro bias calibration — keep robot completely still */
+    /* 6. Gyro bias calibration — keep robot completely still */
     memset(&calib, 0, sizeof(calib));
     while (!calib.done) {
+        LCD_Display_Update(&ahrs, 0);   /* show CALIB status on LCD */
         if (ICM20948_Read(&hi2c1, &imu) == HAL_OK)
             ICM20948_Calibrate(&imu, &calib, CALIB_SAMPLES);
         HAL_Delay(IMU_PERIOD_MS);
@@ -250,6 +256,7 @@ void App_Run(void)
     uint32_t t_enc     = HAL_GetTick();
     uint32_t t_pub_imu = HAL_GetTick();
     uint32_t t_pub_enc = HAL_GetTick();
+    uint32_t t_lcd     = HAL_GetTick();
 
     while (1) {
         uint32_t now = HAL_GetTick();
@@ -296,6 +303,12 @@ void App_Run(void)
         if (now - t_pub_enc >= ENC_PUB_PERIOD_MS) {
             t_pub_enc = now;
             publish_encoders();
+        }
+
+        /* ── Refresh LCD @ 10 Hz ── */
+        if (now - t_lcd >= LCD_PUB_PERIOD_MS) {
+            t_lcd = now;
+            LCD_Display_Update(&ahrs, 1);
         }
 
         /* Spin micro-ROS (non-blocking) */
