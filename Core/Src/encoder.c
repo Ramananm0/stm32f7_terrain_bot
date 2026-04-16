@@ -1,18 +1,25 @@
 /**
  * encoder.c  —  Quadrature encoder driver
- * STM32F746G-DISCO  |  TIM5 (A0+A1 = LEFT)  TIM2 (D9+CN2p15 = RIGHT)
+ * STM32F746G-DISCO
+ *   FL: TIM5 (A0+A1)         FR: TIM2 (D9+CN2p15)
+ *   RL: TIM4 (CN2p13+CN2p11) RR: TIM3 (D3+CN2-PB5)
  */
 #include "encoder.h"
 #include <string.h>
 
 Encoder_t g_enc[ENC_NUM];
 
-void Encoder_Init(TIM_HandleTypeDef *htim5, TIM_HandleTypeDef *htim2)
+void Encoder_Init(TIM_HandleTypeDef *htim_fl,
+                  TIM_HandleTypeDef *htim_fr,
+                  TIM_HandleTypeDef *htim_rl,
+                  TIM_HandleTypeDef *htim_rr)
 {
     memset(g_enc, 0, sizeof(g_enc));
 
-    g_enc[ENC_LEFT].htim  = htim5;   /* A0 (PA0=CH1) + A1 (PA1=CH2) */
-    g_enc[ENC_RIGHT].htim = htim2;   /* D9 (PA15=CH1) + CN2p15 (PB3=CH2) */
+    g_enc[ENC_FL].htim = htim_fl;   /* A0 (PA0=CH1)      + A1 (PA1=CH2)       */
+    g_enc[ENC_FR].htim = htim_fr;   /* D9 (PA15=CH1)     + CN2p15 (PB3=CH2)   */
+    g_enc[ENC_RL].htim = htim_rl;   /* CN2p13 (PB6=CH1)  + CN2p11 (PB7=CH2)   */
+    g_enc[ENC_RR].htim = htim_rr;   /* D3 (PB4=CH1)      + CN2 (PB5=CH2)      */
 
     for (int i = 0; i < ENC_NUM; i++) {
         HAL_TIM_Encoder_Start(g_enc[i].htim, TIM_CHANNEL_ALL);
