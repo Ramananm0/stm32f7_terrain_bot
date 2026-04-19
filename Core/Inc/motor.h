@@ -1,41 +1,37 @@
 /**
- * motor.h — 4-motor PWM velocity driver
+ * motor.h — 4-motor PWM velocity driver (via PCA9685)
  * Board : STM32F746G-DISCO
  *
- * ── CubeMX: TIM1 (Motor PWM, 20 kHz) ────────────────────────────────
- *   Mode               : PWM Generation CH1 / CH2 / CH3 / CH4
- *   Internal Clock
- *   Prescaler (PSC)    : 0            (TIM1 clock = 216 MHz on APB2)
- *   Counter Period(ARR): 10799        → 216 MHz / 10800 = 20 kHz
- *   Auto-reload preload: Enable
- *   CH1..4 Mode        : PWM mode 1,  Polarity: High
+ * All motor PWM and direction signals are routed through a PCA9685
+ * 16-channel I2C PWM controller on I2C1 (PB8=SCL, PB9=SDA).
  *
- *   Pin mapping (CubeMX):
- *     TIM1_CH1 → PA8  (Arduino D10)       Motor FL  (Front-Left)
- *     TIM1_CH2 → PE11 (Morpho CN1 pin 6)  Motor FR  (Front-Right)
- *     TIM1_CH3 → PE13 (Morpho CN1 pin 8)  Motor RL  (Rear-Left)
- *     TIM1_CH4 → PE14 (Morpho CN1 pin 10) Motor RR  (Rear-Right)
+ * This avoids conflicts with the built-in LCD (LTDC uses PE11/PE13/PE14
+ * which overlap with TIM1_CH2/CH3/CH4) and with FMC SDRAM (PI2/PI3).
  *
- * ── CubeMX: Direction GPIO ──────────────────────────────────────────
- *   Configure each as: GPIO_Output, Push-Pull, No Pull, Low speed.
- *   Initial output level: Low.
+ * ── PCA9685 channel assignment ───────────────────────────────────────
+ *   CH0 : Motor FL  PWM   (speed,  0–4095)
+ *   CH1 : Motor FR  PWM
+ *   CH2 : Motor RL  PWM
+ *   CH3 : Motor RR  PWM
+ *   CH4 : Motor FL  DIR   (0=fwd LOW,  4095=rev HIGH)
+ *   CH5 : Motor FR  DIR
+ *   CH6 : Motor RL  DIR
+ *   CH7 : Motor RR  DIR
  *
- *   Default assignment (change MOTOR_xx_DIR_PORT/PIN macros below):
- *     FL_DIR → PG6  (Arduino D2)
- *     FR_DIR → PG7  (Arduino D4)
- *     RL_DIR → PI3  (Arduino D7)
- *     RR_DIR → PI2  (Arduino D8)
+ * ── H-bridge wiring per motor (e.g. L298N, TB6612FNG, DRV8833) ──────
+ *   PCA9685 CH_PWM  →  ENA  (enable / speed)
+ *   PCA9685 CH_DIR  →  IN1  (direction input 1)
+ *   GND             →  IN2  (keep LOW for single-pin direction logic)
+ *   Motor terminals →  Motor A / B
  *
- * ── H-bridge wiring per motor ────────────────────────────────────────
- *   One driver chip per motor (e.g. L298N, TB6612FNG, DRV8833):
- *     PWM pin → ENA  (enable / speed)
- *     DIR pin → IN1  (direction input 1)
- *     GND     → IN2  (keep LOW for single-direction H-bridge logic)
+ * ── Polarity ─────────────────────────────────────────────────────────
+ *   Right-side motors (FR, RR) are physically mirror-mounted.
+ *   Firmware handles reversal via MOTOR_POLARITY[] in motor.c.
+ *   If a wheel spins backwards, change its entry from -1 to +1.
  *
- * ── Motor polarity ───────────────────────────────────────────────────
- *   Right-side motors are physically mirrored.
- *   Adjust MOTOR_FL/FR/RL/RR_POLARITY in motor.c if a wheel spins
- *   backwards when it should go forward.
+ * ── CubeMX: No TIM1 configuration needed for motor PWM ──────────────
+ *   I2C1 must be configured at 400 kHz (already used for ICM-20948).
+ *   PCA9685_Init() must be called before Motor_Init().
  */
 
 #ifndef MOTOR_H
@@ -44,7 +40,7 @@
 #include "stm32f7xx_hal.h"
 #include <stdint.h>
 
-/* ── Motor indices ──────────────────────────────────────────────────── */
+/* ── Motor indices ────────────────────────────────────────────────── */
 typedef enum {
     MOTOR_FL  = 0,   /* Front-Left  */
     MOTOR_FR  = 1,   /* Front-Right */
@@ -53,56 +49,31 @@ typedef enum {
     MOTOR_NUM = 4
 } Motor_ID;
 
-/* ── Physical speed limit ───────────────────────────────────────────── */
-/* RMCS-3070 @ 12 V: 100 RPM output × 26.70 mm wheel circ / 60 s        */
-/* Update if you mount larger wheels.                                     */
+/* ── Physical speed limit ─────────────────────────────────────────── */
+/* RMCS-3070 @ 12 V: 100 RPM × π × 8.5 mm wheel / 60 s = 44.5 mm/s  */
 #define MOTOR_MAX_SPEED_MMPS   44.5f
 
-/* ── PWM timer constant ─────────────────────────────────────────────── */
-/* Must equal the ARR value set in CubeMX for TIM1.                      */
-#define MOTOR_PWM_ARR          10799u
+/* ── Anti-windup clamp for PI integrator ─────────────────────────── */
+#define MOTOR_ILIMIT   (MOTOR_MAX_SPEED_MMPS * 0.5f)   /* 22.25 mm/s */
 
-/* ── Direction GPIO ──────────────────────────────────────────────────── */
-/* Edit port/pin to match your CubeMX label assignments.                  */
-#define MOTOR_FL_DIR_PORT   GPIOG
-#define MOTOR_FL_DIR_PIN    GPIO_PIN_6    /* D2  PG6 */
-
-#define MOTOR_FR_DIR_PORT   GPIOG
-#define MOTOR_FR_DIR_PIN    GPIO_PIN_7    /* D4  PG7 */
-
-#define MOTOR_RL_DIR_PORT   GPIOI
-#define MOTOR_RL_DIR_PIN    GPIO_PIN_3    /* D7  PI3 */
-
-#define MOTOR_RR_DIR_PORT   GPIOI
-#define MOTOR_RR_DIR_PIN    GPIO_PIN_2    /* D8  PI2 */
-
-/* ── TIM1 channel per motor ─────────────────────────────────────────── */
-#define MOTOR_FL_TIM_CH    TIM_CHANNEL_1
-#define MOTOR_FR_TIM_CH    TIM_CHANNEL_2
-#define MOTOR_RL_TIM_CH    TIM_CHANNEL_3
-#define MOTOR_RR_TIM_CH    TIM_CHANNEL_4
-
-/* ── API ────────────────────────────────────────────────────────────── */
+/* ── API ──────────────────────────────────────────────────────────── */
 
 /**
- * @brief Initialise motor PWM outputs. Call after MX_TIM1_Init().
- * @param htim1  TIM1 handle (4-channel PWM, configured in CubeMX).
+ * @brief  Initialise motor driver. Call after PCA9685_Init().
+ *         The htim parameter is unused (kept for API compatibility).
  */
-void Motor_Init(TIM_HandleTypeDef *htim1);
+void Motor_Init(TIM_HandleTypeDef *htim);
 
 /**
- * @brief Drive one motor at the requested velocity.
- *        Velocity is linearly mapped to PWM duty cycle.
- *        Input is clamped to ±MOTOR_MAX_SPEED_MMPS.
- *
- * @param id        Motor index (MOTOR_FL … MOTOR_RR).
- * @param vel_mmps  Velocity mm/s. +ve = forward, -ve = reverse.
+ * @brief  Drive one motor at the requested velocity.
+ * @param  id        Motor index (MOTOR_FL … MOTOR_RR)
+ * @param  vel_mmps  +ve = forward, -ve = reverse. Clamped to ±44.5 mm/s.
  */
 void Motor_Set(Motor_ID id, float vel_mmps);
 
 /**
- * @brief Immediately zero PWM on all four motors (coast to stop).
- *        Direction pins are not changed.
+ * @brief  Immediately stop all four motors (zero PWM duty).
+ *         Direction pins are not changed.
  */
 void Motor_StopAll(void);
 

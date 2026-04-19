@@ -100,8 +100,10 @@ bool ICM20948_Calibrate(const ICM20948_Data *d,
                         ICM20948_Calib      *c,
                         uint16_t             n_samples);
 
-/* Complementary filter — identical to terrain_risk_node.py
-   Call every cycle after ICM20948_Read() */
+/* Complementary filter — legacy, kept for reference.
+   App_Run() uses Madgwick AHRS instead of this function.
+   Call every cycle after ICM20948_Read() if you want roll/pitch
+   without the full Madgwick filter. */
 void ICM20948_Filter(ICM20948_Data        *d,
                      const ICM20948_Calib *c,
                      float                 dt_s,

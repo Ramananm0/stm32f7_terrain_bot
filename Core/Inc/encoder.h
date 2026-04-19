@@ -9,7 +9,7 @@
  *  Front-Left   │ TIM5  │ A0   (PA0)            │ A1   (PA1)
  *  Front-Right  │ TIM2  │ D9   (PA15)           │ Morpho CN2 pin15 (PB3)
  *  Rear-Left    │ TIM4  │ Morpho CN2 pin13 (PB6)│ Morpho CN2 pin11 (PB7)
- *  Rear-Right   │ TIM3  │ D3   (PB4)            │ Morpho CN2 (PB5)
+ *  Rear-Right   │ TIM3  │ D3   (PB4)            │ Morpho CN1 pin64 (PB5)
  *
  * ── CubeMX settings for all four timers ─────────────────────────────
  *   Combined Channels : Encoder Mode TI1 and TI2
@@ -33,7 +33,7 @@
 #define ENC_FL     0   /* TIM5 : A0 (PA0=CH1)  + A1 (PA1=CH2)           */
 #define ENC_FR     1   /* TIM2 : D9 (PA15=CH1) + CN2p15 (PB3=CH2)       */
 #define ENC_RL     2   /* TIM4 : CN2p13 (PB6=CH1) + CN2p11 (PB7=CH2)   */
-#define ENC_RR     3   /* TIM3 : D3 (PB4=CH1)  + CN2 (PB5=CH2)          */
+#define ENC_RR     3   /* TIM3 : D3 (PB4=CH1)  + Morpho CN1 pin64 (PB5=CH2) */
 #define ENC_NUM    4
 
 /* Backward-compatibility aliases (used by lcd_display.c) */

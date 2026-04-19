@@ -53,6 +53,7 @@
 #include "icm20948.h"
 #include "encoder.h"
 #include "motor.h"
+#include "pca9685.h"
 #include "madgwick.h"
 #include "microros_transport.h"
 #include "lcd_display.h"
@@ -397,16 +398,19 @@ void App_Run(void)
     /* 3. All 4 encoders */
     Encoder_Init(&htim5, &htim2, &htim4, &htim3);
 
-    /* 4. All 4 motor PWM outputs */
+    /* 4. PCA9685 I2C PWM expander — must come before Motor_Init */
+    PCA9685_Init(&hi2c1);
+
+    /* 5. All 4 motor PWM outputs (via PCA9685) */
     Motor_Init(&htim1);
 
-    /* 5. Madgwick orientation filter */
+    /* 6. Madgwick orientation filter */
     Madgwick_Init(&ahrs, MADGWICK_BETA);
 
-    /* 6. micro-ROS — blocks until Raspberry Pi agent responds */
+    /* 7. micro-ROS — blocks until Raspberry Pi agent responds */
     uros_setup();
 
-    /* 7. Gyro bias calibration — keep robot completely still (~2 s) */
+    /* 8. Gyro bias calibration — keep robot completely still (~2 s) */
     memset(&calib, 0, sizeof(calib));
     while (!calib.done) {
         LCD_Display_Update(&ahrs, 0);   /* show CALIB on LCD */
@@ -415,7 +419,7 @@ void App_Run(void)
         HAL_Delay(IMU_PERIOD_MS);
     }
 
-    /* 8. Seed Madgwick with accel-derived roll/pitch */
+    /* 9. Seed Madgwick with accel-derived roll/pitch */
     {
         float ax = imu.ax, ay = imu.ay, az = imu.az;
         float rn = 1.0f / sqrtf(ax*ax + ay*ay + az*az);
@@ -429,10 +433,10 @@ void App_Run(void)
         ahrs.initialised = true;
     }
 
-    /* 9. Arm cmd_vel watchdog */
+    /* 10. Arm cmd_vel watchdog */
     g_cmd_last_ms = HAL_GetTick();
 
-    /* 10. Main loop */
+    /* 11. Main loop */
     uint32_t t_imu     = HAL_GetTick();
     uint32_t t_enc     = HAL_GetTick();
     uint32_t t_pub_imu = HAL_GetTick();
@@ -459,9 +463,6 @@ void App_Run(void)
                 else
                     Madgwick_UpdateIMU(&ahrs, gx, gy, gz,
                                        imu.ax, imu.ay, imu.az, dt);
-
-                /* Extract Euler angles (needed by update_safety) */
-                Madgwick_GetEuler(&ahrs);
 
                 /* Safety layer — paper §III, runs at same rate as IMU */
                 update_safety();

@@ -30,7 +30,7 @@
 #define COL_BG          LCD_COLOR_BLACK
 #define COL_HEADER_BG   0xFF003366u    /* dark blue */
 #define COL_HEADER_TXT  LCD_COLOR_WHITE
-#define COL_SECTION     0xFF00AABB u   /* cyan-ish  */
+#define COL_SECTION     0xFF00AABBu    /* cyan-ish  */
 #define COL_LABEL       0xFFCCCCCCu   /* light grey */
 #define COL_VALUE       LCD_COLOR_WHITE
 #define COL_OK          0xFF00CC44u    /* green  */
