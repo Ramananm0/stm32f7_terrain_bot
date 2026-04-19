@@ -1,81 +1,84 @@
 /**
- * motor.c — 4-motor velocity driver via PCA9685 (I2C PWM expander)
+ * motor.c — BTS7960 skid-steer motor driver
  * STM32F746G-DISCO
  *
- * WHY PCA9685 instead of TIM1 direct PWM?
- * ────────────────────────────────────────
- * TIM1_CH2 → PE11, TIM1_CH3 → PE13, TIM1_CH4 → PE14 are all used
- * internally by the LTDC peripheral for the built-in 4.3" LCD.
- * Only TIM1_CH1 (PA8 = Arduino D10) is free.
- * The PCA9685 routes all 4 motor PWM + 4 direction signals over
- * I2C1 (PB8/PB9), which is already wired to the ICM-20948.
- *
- * Channel assignment on PCA9685:
- *   CH0 : Motor FL PWM     CH4 : Motor FL DIR
- *   CH1 : Motor FR PWM     CH5 : Motor FR DIR
- *   CH2 : Motor RL PWM     CH6 : Motor RL DIR
- *   CH3 : Motor RR PWM     CH7 : Motor RR DIR
- *
- * DIR logic: PCA9685_SetDigital(ch, 0) = LOW = forward
- *            PCA9685_SetDigital(ch, 1) = HIGH = reverse
+ * LEFT  BTS7960: TIM12_CH1=RPWM(PH6/D6)   TIM12_CH2=LPWM(PB15/D11)
+ * RIGHT BTS7960: TIM1_CH1 =RPWM(PA8/D10)  TIM13_CH1=LPWM(PA6/Morpho)
  */
 
 #include "motor.h"
-#include "pca9685.h"
 #include <math.h>
 
-#define PWM_CH_OFFSET   0u   /* CH0..CH3 = speed PWM  */
-#define DIR_CH_OFFSET   4u   /* CH4..CH7 = direction  */
+/* ── Timer handles ───────────────────────────────────────────────── */
+static TIM_HandleTypeDef *g_tim12  = NULL;  /* LEFT  RPWM+LPWM */
+static TIM_HandleTypeDef *g_tim1   = NULL;  /* RIGHT RPWM      */
+static TIM_HandleTypeDef *g_tim13  = NULL;  /* RIGHT LPWM      */
+static uint8_t g_ready = 0;
 
-/*
- * Polarity correction for mirror-mounted right-side motors.
- * +1 = standard,  -1 = invert direction signal.
- */
-static const int8_t MOTOR_POLARITY[MOTOR_NUM] = {
-    +1,   /* FL — standard orientation */
-    -1,   /* FR — mirror-mounted, invert */
-    +1,   /* RL — standard orientation */
-    -1,   /* RR — mirror-mounted, invert */
-};
-
-static uint8_t g_initialised = 0;
-
-/* ── Public API ─────────────────────────────────────────────────── */
-
-void Motor_Init(TIM_HandleTypeDef *htim)
+/* ── Internal: set one PWM channel ──────────────────────────────── */
+static inline void set_pwm(TIM_HandleTypeDef *htim,
+                            uint32_t ch, uint32_t duty)
 {
-    (void)htim;   /* TIM1 not used — PCA9685 handles all PWM channels */
-    /* PCA9685_Init(&hi2c1) must be called in App_Run() before this */
-    g_initialised = 1;
+    __HAL_TIM_SET_COMPARE(htim, ch, duty);
+}
+
+/* ── Public API ──────────────────────────────────────────────────── */
+
+void Motor_Init(TIM_HandleTypeDef *htim12,
+                TIM_HandleTypeDef *htim1,
+                TIM_HandleTypeDef *htim13)
+{
+    g_tim12 = htim12;
+    g_tim1  = htim1;
+    g_tim13 = htim13;
+
+    /* Start all 4 PWM outputs */
+    HAL_TIM_PWM_Start(g_tim12, TIM_CHANNEL_1);   /* LEFT  RPWM */
+    HAL_TIM_PWM_Start(g_tim12, TIM_CHANNEL_2);   /* LEFT  LPWM */
+    HAL_TIM_PWM_Start(g_tim1,  TIM_CHANNEL_1);   /* RIGHT RPWM */
+    HAL_TIM_PWM_Start(g_tim13, TIM_CHANNEL_1);   /* RIGHT LPWM */
+
+    g_ready = 1;
     Motor_StopAll();
 }
 
-void Motor_Set(Motor_ID id, float vel_mmps)
+void Motor_SetSide(Motor_Side side, float vel_mmps)
 {
-    if ((uint8_t)id >= MOTOR_NUM || !g_initialised) return;
+    if (!g_ready) return;
 
-    /* Apply polarity correction for mirrored motors */
-    float v = vel_mmps * (float)MOTOR_POLARITY[id];
+    /* Clamp to physical limit */
+    if (vel_mmps >  MOTOR_MAX_SPEED_MMPS) vel_mmps =  MOTOR_MAX_SPEED_MMPS;
+    if (vel_mmps < -MOTOR_MAX_SPEED_MMPS) vel_mmps = -MOTOR_MAX_SPEED_MMPS;
 
-    /* Clamp */
-    if (v >  MOTOR_MAX_SPEED_MMPS) v =  MOTOR_MAX_SPEED_MMPS;
-    if (v < -MOTOR_MAX_SPEED_MMPS) v = -MOTOR_MAX_SPEED_MMPS;
+    /* Convert speed → PWM duty (0 to ARR) */
+    uint32_t duty = (uint32_t)(fabsf(vel_mmps) / MOTOR_MAX_SPEED_MMPS
+                               * (float)MOTOR_PWM_ARR);
+    if (duty > MOTOR_PWM_ARR) duty = MOTOR_PWM_ARR;
 
-    /* Direction pin: LOW = forward, HIGH = reverse */
-    PCA9685_SetDigital((uint8_t)(DIR_CH_OFFSET + (uint8_t)id),
-                       (v >= 0.0f) ? 0u : 1u);
-
-    /* Speed PWM: 0–4095 proportional to |velocity| */
-    float ratio = fabsf(v) / MOTOR_MAX_SPEED_MMPS;
-    uint16_t duty = (uint16_t)(ratio * (float)PCA9685_MAX_DUTY);
-    if (duty > PCA9685_MAX_DUTY) duty = PCA9685_MAX_DUTY;
-
-    PCA9685_SetDuty((uint8_t)(PWM_CH_OFFSET + (uint8_t)id), duty);
+    if (side == SIDE_LEFT) {
+        if (vel_mmps >= 0.0f) {
+            set_pwm(g_tim12, TIM_CHANNEL_2, 0);      /* LPWM = 0   */
+            set_pwm(g_tim12, TIM_CHANNEL_1, duty);   /* RPWM = duty */
+        } else {
+            set_pwm(g_tim12, TIM_CHANNEL_1, 0);      /* RPWM = 0   */
+            set_pwm(g_tim12, TIM_CHANNEL_2, duty);   /* LPWM = duty */
+        }
+    } else {  /* SIDE_RIGHT */
+        if (vel_mmps >= 0.0f) {
+            set_pwm(g_tim13, TIM_CHANNEL_1, 0);      /* LPWM = 0   */
+            set_pwm(g_tim1,  TIM_CHANNEL_1, duty);   /* RPWM = duty */
+        } else {
+            set_pwm(g_tim1,  TIM_CHANNEL_1, 0);      /* RPWM = 0   */
+            set_pwm(g_tim13, TIM_CHANNEL_1, duty);   /* LPWM = duty */
+        }
+    }
 }
 
 void Motor_StopAll(void)
 {
-    if (!g_initialised) return;
-    for (uint8_t i = 0u; i < (uint8_t)MOTOR_NUM; i++)
-        PCA9685_SetDuty((uint8_t)(PWM_CH_OFFSET + i), 0u);
+    if (!g_ready) return;
+    set_pwm(g_tim12, TIM_CHANNEL_1, 0);
+    set_pwm(g_tim12, TIM_CHANNEL_2, 0);
+    set_pwm(g_tim1,  TIM_CHANNEL_1, 0);
+    set_pwm(g_tim13, TIM_CHANNEL_1, 0);
 }
