@@ -1,8 +1,8 @@
 /**
  * microros_transport.h  —  micro-ROS UART transport declarations
  *
- * USART6:  D1 (PC6) = TX    D0 (PC7) = RX    2 Mbaud
- * Physical: Arduino D1 → cable RX (white),  D0 → cable TX (green),  GND → GND (black)
+ * USART6:  PG14 = TX    PG9 = RX    2 Mbaud
+ * Physical: PG14 → cable RX (white),  PG9 → cable TX (green),  GND → GND (black)
  * Connect USB end of cable to Raspberry Pi, then run:
  *   ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/stm32 -b 2000000
  */

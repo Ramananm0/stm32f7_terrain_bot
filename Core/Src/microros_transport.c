@@ -1,7 +1,7 @@
 /**
  * microros_transport.c  —  UART transport for micro-ROS
- * USART6  D1=PC6(TX)  D0=PC7(RX)  2 Mbaud  STM32F746G-DISCO
- * CubeMX: enable USART6, TX=PC6, RX=PC7, baud=2000000
+ * USART6  PG14(TX)  PG9(RX)  2 Mbaud  STM32F746G-DISCO
+ * CubeMX: enable USART6, TX=PG14, RX=PG9, baud=2000000
  */
 #include "microros_transport.h"
 #include "main.h"        /* has extern UART_HandleTypeDef huart6 */

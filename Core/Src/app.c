@@ -12,7 +12,7 @@
  *   Encoder FR         : TIM2  PA15(CH1) + PB3(CH2)
  *   Encoder RL         : TIM4  PB6(CH1) + PB7(CH2)
  *   Encoder RR         : TIM3  PB4(CH1) + PB5(CH2)
- *   micro-ROS (RPi)    : USART6 PC6(TX/D1) PC7(RX/D0) @ 2 Mbaud
+ *   micro-ROS (RPi)    : USART6 PG14(TX) PG9(RX) @ 2 Mbaud
  *   LCD display        : LTDC built-in 480×272
  *
  * ── Drive mode ───────────────────────────────────────────────────────
@@ -71,7 +71,7 @@ extern TIM_HandleTypeDef  htim3;    /* Encoder RR: PB4(CH1) + PB5(CH2)   */
 extern TIM_HandleTypeDef  htim12;   /* LEFT  BTS7960: RPWM=CH1 LPWM=CH2  */
 extern TIM_HandleTypeDef  htim1;    /* RIGHT BTS7960: RPWM=CH1            */
 extern TIM_HandleTypeDef  htim13;   /* RIGHT BTS7960: LPWM=CH1            */
-extern UART_HandleTypeDef huart6;   /* micro-ROS: TX=PC6(D1) RX=PC7(D0)  */
+extern UART_HandleTypeDef huart6;   /* micro-ROS: TX=PG14  RX=PG9  2 Mbaud */
 
 /* ── Loop timing ─────────────────────────────────────────────────── */
 #define IMU_PERIOD_MS        10    /* 100 Hz — IMU read + Madgwick + safety */
