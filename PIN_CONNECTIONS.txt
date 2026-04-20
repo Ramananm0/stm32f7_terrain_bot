@@ -1,163 +1,148 @@
 ══════════════════════════════════════════════════════════════════════
-  STM32F746G-DISCO — Terrain Bot Pin Connections
-  Arduino Header Only (no Morpho needed)
+  STM32F746G-DISCO — Terrain Bot Complete Pin Connections
+  4WD + ESP32 co-processor architecture
 ══════════════════════════════════════════════════════════════════════
 
 ══════════════════════════════════════════════════════════════════════
-  1. LEFT BTS7960 (#1 → FL + RL motors in parallel)
+  1. BTS7960 FL — Front Left Motor
 ══════════════════════════════════════════════════════════════════════
-
-  BTS7960 pin  │  Board label  │  STM32 pin  │  CubeMX
-  ───────────  │  ───────────  │  ─────────  │  ──────────────────
-  RPWM         │  A4           │  PF7        │  TIM11_CH1 PWM
-  LPWM         │  A5           │  PF6        │  TIM10_CH1 PWM
-  R_EN         │  3.3V         │  —          │  tie HIGH
-  L_EN         │  3.3V         │  —          │  tie HIGH
-  VCC          │  5V           │  —          │  5V power
-  GND          │  GND          │  —          │  common ground
-  RIS          │  not connected│  —          │  optional current sense
-  LIS          │  not connected│  —          │  optional current sense
-
-  Motor outputs:
-  B+ / B-  →  FL motor terminals
-  B+ / B-  →  RL motor terminals (parallel with FL)
+  BTS7960    Arduino    STM32    Timer         Note
+  RPWM    →  A4         PF7      TIM11_CH1     forward PWM
+  LPWM    →  A5         PF6      TIM10_CH1     reverse PWM
+  R_EN    →  3.3V       —        —             tie HIGH always
+  L_EN    →  3.3V       —        —             tie HIGH always
+  VCC     →  5V         —        —
+  GND     →  GND        —        —
+  B+ / B- →  FL motor terminals
 
 ══════════════════════════════════════════════════════════════════════
-  2. RIGHT BTS7960 (#2 → FR + RR motors in parallel)
+  2. BTS7960 FR — Front Right Motor
 ══════════════════════════════════════════════════════════════════════
-
-  BTS7960 pin  │  Board label  │  STM32 pin  │  CubeMX
-  ───────────  │  ───────────  │  ─────────  │  ──────────────────
-  RPWM         │  A2           │  PF9        │  TIM14_CH1 PWM
-  LPWM         │  A3           │  PF8        │  TIM13_CH1 PWM
-  R_EN         │  3.3V         │  —          │  tie HIGH
-  L_EN         │  3.3V         │  —          │  tie HIGH
-  VCC          │  5V           │  —          │  5V power
-  GND          │  GND          │  —          │  common ground
-  RIS          │  not connected│  —          │
-  LIS          │  not connected│  —          │
-
-  Motor outputs:
-  B+ / B-  →  FR motor terminals
-  B+ / B-  →  RR motor terminals (parallel with FR)
+  RPWM    →  A2         PF9      TIM14_CH1     forward PWM
+  LPWM    →  A3         PF8      TIM13_CH1     reverse PWM
+  R_EN    →  3.3V       —        —
+  L_EN    →  3.3V       —        —
+  VCC     →  5V         —        —
+  GND     →  GND        —        —
+  B+ / B- →  FR motor terminals
 
 ══════════════════════════════════════════════════════════════════════
-  3. ENCODERS (1 pin per motor, CH_A only, interrupt-based)
+  3. BTS7960 RL — Rear Left Motor
 ══════════════════════════════════════════════════════════════════════
-
-  Motor  │  Board label  │  STM32 pin  │  CubeMX           │  Wire
-  ─────  │  ───────────  │  ─────────  │  ───────────────  │  ──────
-  FL     │  A0           │  PA0        │  GPIO_EXTI0       │  Green
-  FR     │  D3           │  PB4        │  GPIO_EXTI4       │  Green
-  RL     │  D9           │  PA15       │  GPIO_EXTI15      │  Green
-  RR     │  D2           │  PG6        │  GPIO_EXTI6       │  Green
-
-  All encoder pins:
-    Trigger  : Rising Edge
-    Pull     : Pull-Down
-    NVIC     : Enable (EXTI0, EXTI4, EXTI9_5, EXTI15_10)
-
-  RMCS-3070 encoder cable colours:
-    Red   → 5V  (encoder power)
-    Black → GND
-    Green → CH_A  (connect to board label above)
-    White → CH_B  (leave unconnected for now)
-    Yellow→ Motor+  (to BTS7960 output)
-    Blue  → Motor-  (to BTS7960 output)
+  RPWM    →  D6         PH6      TIM12_CH1     forward PWM
+  LPWM    →  D11        PB15     TIM12_CH2     reverse PWM
+  R_EN    →  3.3V       —        —
+  L_EN    →  3.3V       —        —
+  VCC     →  5V         —        —
+  GND     →  GND        —        —
+  B+ / B- →  RL motor terminals
 
 ══════════════════════════════════════════════════════════════════════
-  4. ICM-20948 IMU → CN2 connector (8-pin I2C extension)
+  4. BTS7960 RR — Rear Right Motor
 ══════════════════════════════════════════════════════════════════════
-
-  ICM-20948 pin  │  CN2 pin  │  Description
-  ─────────────  │  ───────  │  ──────────────────
-  VDD (3.3V)     │  Pin 5    │  +3V3
-  GND            │  Pin 7    │  GND
-  SDA            │  Pin 1    │  I2C_SDA (PB9)
-  SCL            │  Pin 3    │  I2C_SCL (PB8)
-  AD0            │  GND      │  I2C address = 0x68
-  INT            │  —        │  optional (not used)
-
-  CubeMX: I2C1, Fast Mode, 400kHz, SCL=PB8, SDA=PB9
+  RPWM    →  D10        PA8      TIM1_CH1      forward PWM
+  LPWM    →  D3         PB4      TIM3_CH1      reverse PWM
+  R_EN    →  3.3V       —        —
+  L_EN    →  3.3V       —        —
+  VCC     →  5V         —        —
+  GND     →  GND        —        —
+  B+ / B- →  RR motor terminals
 
 ══════════════════════════════════════════════════════════════════════
-  5. UART to Raspberry Pi (USB-TTL cable)
+  5. ICM-20948 IMU → CN2 connector (8-pin I2C extension)
 ══════════════════════════════════════════════════════════════════════
-
-  Cable wire  │  Board label  │  STM32 pin
-  ──────────  │  ───────────  │  ─────────
-  White (RXD) │  D1           │  PC6  USART6_TX
-  Green (TXD) │  D0           │  PC7  USART6_RX
-  Black (GND) │  GND          │  GND
-  Red  (VCC)  │  DO NOT CONNECT
-  Yellow/Blue │  DO NOT CONNECT (RTS/CTS not used)
-
-  CubeMX: USART6, Async, 2000000 baud, 8N1, no flow control
+  ICM-20948    CN2 Pin    STM32
+  VDD       →  Pin 5      +3V3
+  GND       →  Pin 7      GND
+  SDA       →  Pin 1      PB9 (I2C1_SDA)
+  SCL       →  Pin 3      PB8 (I2C1_SCL)
+  AD0       →  GND        addr = 0x68
+  INT       →  not connected
 
 ══════════════════════════════════════════════════════════════════════
-  6. CubeMX Configuration Summary
+  6. ESP32-WROOM encoder co-processor → I2C1 shared bus
 ══════════════════════════════════════════════════════════════════════
+  ESP32        Arduino    STM32
+  GPIO21(SDA)→  D14        PB9 (shared with IMU)
+  GPIO22(SCL)→  D15        PB8 (shared with IMU)
+  3V3        →  3V3 pin    STM32 3.3V output
+  GND        →  GND        common ground
 
-  Peripheral  │  Pins          │  Settings
-  ──────────  │  ───────────   │  ─────────────────────────────────
-  I2C1        │  PB8, PB9      │  Fast Mode 400 kHz
-  USART6      │  PC6, PC7      │  2000000 baud, 8N1, no flow ctrl
-  TIM10       │  PF6 (A5)      │  PWM CH1, PSC=0, ARR=10799 (20kHz)
-  TIM11       │  PF7 (A4)      │  PWM CH1, PSC=0, ARR=10799
-  TIM13       │  PF8 (A3)      │  PWM CH1, PSC=0, ARR=10799
-  TIM14       │  PF9 (A2)      │  PWM CH1, PSC=0, ARR=10799
-  PA0  (A0)   │  FL encoder    │  GPIO_EXTI0,  Rising, Pull-Down
-  PB4  (D3)   │  FR encoder    │  GPIO_EXTI4,  Rising, Pull-Down
-  PA15 (D9)   │  RL encoder    │  GPIO_EXTI15, Rising, Pull-Down
-  PG6  (D2)   │  RR encoder    │  GPIO_EXTI6,  Rising, Pull-Down
+  I2C address: 0x30
 
-  NVIC: Enable EXTI0, EXTI4, EXTI9_5, EXTI15_10
+  Encoder connections to ESP32:
+  Motor    CH_A (green)    CH_B (white)
+  FL    →  GPIO4           GPIO5
+  FR    →  GPIO12          GPIO13
+  RL    →  GPIO14          GPIO15
+  RR    →  GPIO33          GPIO32
 
-══════════════════════════════════════════════════════════════════════
-  7. Add to main.c (in stm32f7xx_it.c EXTI handlers)
-══════════════════════════════════════════════════════════════════════
-
-  In stm32f7xx_it.c, add encoder pulse callbacks:
-
-  void EXTI0_IRQHandler(void) {
-      HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_0);   /* FL encoder PA0 */
-  }
-  void EXTI4_IRQHandler(void) {
-      HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_4);   /* FR encoder PB4 */
-  }
-  void EXTI9_5_IRQHandler(void) {
-      HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_6);   /* RR encoder PG6 */
-  }
-  void EXTI15_10_IRQHandler(void) {
-      HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_15);  /* RL encoder PA15 */
-  }
-
-  In main.c or app.c, add callback:
-  void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
-      switch (GPIO_Pin) {
-          case GPIO_PIN_0:  Encoder_PulseISR(ENC_FL); break;
-          case GPIO_PIN_4:  Encoder_PulseISR(ENC_FR); break;
-          case GPIO_PIN_15: Encoder_PulseISR(ENC_RL); break;
-          case GPIO_PIN_6:  Encoder_PulseISR(ENC_RR); break;
-      }
-  }
+  Motor encoder power:
+  Red  (5V)  → 5V rail
+  Black(GND) → GND
 
 ══════════════════════════════════════════════════════════════════════
-  8. Complete pin usage summary
+  7. I2C pull-up resistors
 ══════════════════════════════════════════════════════════════════════
+  4.7kΩ between SDA (D14/PB9) and 3.3V
+  4.7kΩ between SCL (D15/PB8) and 3.3V
 
-  Label  │  STM32  │  Function
-  ─────  │  ─────  │  ────────────────────────
-  A0     │  PA0    │  FL encoder CH_A (EXTI)
-  A2     │  PF9    │  RIGHT BTS RPWM (TIM14)
-  A3     │  PF8    │  RIGHT BTS LPWM (TIM13)
-  A4     │  PF7    │  LEFT  BTS RPWM (TIM11)
-  A5     │  PF6    │  LEFT  BTS LPWM (TIM10)
-  D0     │  PC7    │  UART RX
-  D1     │  PC6    │  UART TX
-  D2     │  PG6    │  RR encoder CH_A (EXTI)
-  D3     │  PB4    │  FR encoder CH_A (EXTI)
-  D9     │  PA15   │  RL encoder CH_A (EXTI)
-  D14    │  PB9    │  I2C1 SDA (IMU via CN2)
-  D15    │  PB8    │  I2C1 SCL (IMU via CN2)
-  CN2    │  —      │  I2C connector for IMU
+  Note: check if ICM-20948 breakout board already has pull-ups.
+  If yes, external resistors not needed.
+
+══════════════════════════════════════════════════════════════════════
+  8. UART to Raspberry Pi (USB-TTL cable)
+══════════════════════════════════════════════════════════════════════
+  Cable wire    Arduino    STM32
+  White(RXD) →  D1         PC6   USART6_TX
+  Green(TXD) →  D0         PC7   USART6_RX
+  Black(GND) →  GND        GND
+  Red        →  DO NOT CONNECT
+  Yellow/Blue→  DO NOT CONNECT
+
+  Baud rate: 2,000,000
+
+══════════════════════════════════════════════════════════════════════
+  9. Complete Arduino header pin usage summary
+══════════════════════════════════════════════════════════════════════
+  Label  STM32   Function                    Timer
+  A2     PF9     RR RPWM (forward)           TIM14_CH1
+  A3     PF8     FR LPWM (reverse)           TIM13_CH1  ← note: FR reverse
+  A4     PF7     FL RPWM (forward)           TIM11_CH1
+  A5     PF6     FL LPWM (reverse)           TIM10_CH1
+  D0     PC7     UART RX ← RPi              USART6_RX
+  D1     PC6     UART TX → RPi              USART6_TX
+  D3     PB4     RR LPWM (reverse)           TIM3_CH1
+  D6     PH6     RL RPWM (forward)           TIM12_CH1
+  D10    PA8     RR RPWM (forward)           TIM1_CH1
+  D11    PB15    RL LPWM (reverse)           TIM12_CH2
+  D14    PB9     I2C SDA (IMU + ESP32)       I2C1_SDA
+  D15    PB8     I2C SCL (IMU + ESP32)       I2C1_SCL
+
+  Free pins: A0, A1, D2, D4, D5, D7, D8, D9, D12, D13
+
+══════════════════════════════════════════════════════════════════════
+  10. CubeMX peripheral configuration
+══════════════════════════════════════════════════════════════════════
+  Peripheral  Pins              Settings
+  I2C1        PB8, PB9          Fast Mode 400kHz
+  USART6      PC6, PC7          2000000 baud 8N1 no flow ctrl
+  TIM10       PF6 (A5)          PWM CH1 PSC=0 ARR=10799 Mode1 High
+  TIM11       PF7 (A4)          PWM CH1 PSC=0 ARR=10799 Mode1 High
+  TIM12       PH6+PB15 (D6+D11) PWM CH1+CH2 PSC=0 ARR=10799 Mode1 High
+  TIM13       PF8 (A3)          PWM CH1 PSC=0 ARR=10799 Mode1 High
+  TIM14       PF9 (A2)          PWM CH1 PSC=0 ARR=10799 Mode1 High
+  TIM1        PA8 (D10)         PWM CH1 PSC=0 ARR=10799 Mode1 High
+  TIM3        PB4 (D3)          PWM CH1 PSC=0 ARR=10799 Mode1 High
+
+  Clock: HSE bypass 25MHz → PLLM=25 PLLN=432 PLLP=2 → 216MHz
+
+══════════════════════════════════════════════════════════════════════
+  11. Breadboard wiring for I2C bus
+══════════════════════════════════════════════════════════════════════
+  Use a small breadboard to split the I2C bus:
+
+  Row 1 (SCL): STM32 D15 → ICM SCL → ESP32 GPIO22 → 4.7kΩ → 3V3
+  Row 2 (SDA): STM32 D14 → ICM SDA → ESP32 GPIO21 → 4.7kΩ → 3V3
+  Row 3 (3V3): STM32 3V3 → ICM VDD → ESP32 3V3
+  Row 4 (GND): STM32 GND → ICM GND → ESP32 GND → all motors GND
