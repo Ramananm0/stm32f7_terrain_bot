@@ -1,555 +1,499 @@
 # STM32F746G-DISCO — Terrain Bot Firmware
 
-Real-time motor control, IMU sensing, and ROS2 bridge for a 4-wheel differential-drive terrain robot.
-Runs on the **STM32F746G-DISCO** (Cortex-M7 @ 216 MHz, hardware FPU, 1 MB Flash).
+Real-time motor control, IMU sensing, encoder odometry and ROS2 bridge
+for a **4-wheel skid-steer terrain rover**.
+
+Board: **STM32F746NGH6** (Cortex-M7 @ 216 MHz, hardware FPU, 1 MB Flash)
+Drive: **Skid-steer / tank drive** — 2× BTS7960 H-bridge drivers
+Sensors: ICM-20948 9-DOF IMU + 4× RMCS-3070 wheel encoders
+Display: Built-in 4.3" LCD (480×272) — live graphical dashboard
+ROS2: micro-ROS over USART6 → Raspberry Pi 4B
 
 ---
 
-## System architecture
+## Hardware Design Decisions
+
+### Why skid-steer with 2× BTS7960?
+Each BTS7960 drives one side (left or right) with two motors wired in
+parallel. This gives full 4WD traction with only 4 PWM signals total,
+all fitting on the Arduino header with no Morpho connector needed.
+
+### Why Arduino header only?
+The STM32F746G-DISCO exposes only Arduino-style headers (D0–D15, A0–A5)
+externally. The Morpho connector holes are not populated on this board
+revision. All firmware is designed around the 22 available Arduino pins.
+
+### Why interrupt-based encoders (not quadrature timer mode)?
+Hardware quadrature timer mode requires both CH1 and CH2 of the same
+timer on accessible pins. On this board only TIM12 has both channels on
+the Arduino header. The other three timers have CH2 on unpopulated
+Morpho pads or internally blocked pins (ETH, LTDC, UART).
+
+Using GPIO interrupts on CH_A only (1 pin per motor) gives accurate
+speed measurement for all 4 motors. Direction is inferred from the
+BTS7960 command since we control it directly.
+
+### Why separate encoder update rate (10 Hz) vs PID rate (100 Hz)?
+Interrupt pulse counts accumulate continuously. Speed is calculated
+every 100 ms (10 Hz) from the accumulated count — this gives stable
+velocity estimates even at slow terrain speeds. The PID runs at 100 Hz
+using the most recent speed estimate.
+
+### Phase 2 — MCP23017 (when it arrives)
+The CJMCU-2317 MCP23017 I2C GPIO expander (16 pins over I2C) will add
+full quadrature support for all 4 encoders via software interrupt
+counting on GPA/GPB pins, improving odometry accuracy for SLAM.
+
+---
+
+## System Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                 STM32F746G-DISCO  (real-time controller)             │
-│                                                                      │
-│  I2C1 (PB8/PB9)  ──────────►  ICM-20948 (9-DOF IMU)               │
-│                                  accel + gyro + AK09916 mag         │
-│                                  Madgwick AHRS filter @ 100 Hz      │
-│                                                                      │
-│  TIM5 (PA0/PA1)      ──────►  Encoder FL  (Front-Left)             │
-│  TIM2 (PA15/PB3)     ──────►  Encoder FR  (Front-Right)            │
-│  TIM4 (PB6/PB7)      ──────►  Encoder RL  (Rear-Left)              │
-│  TIM3 (PB4/PB5)      ──────►  Encoder RR  (Rear-Right)             │
-│                                                                      │
-│  TIM1_CH1 (PA8)  + DIR (PG6) ──►  Motor FL                        │
-│  TIM1_CH2 (PE11) + DIR (PG7) ──►  Motor FR                        │
-│  TIM1_CH3 (PE13) + DIR (PI3) ──►  Motor RL                        │
-│  TIM1_CH4 (PE14) + DIR (PI2) ──►  Motor RR                        │
-│                                                                      │
-│  ┌─────────────────────────────────────────────────────────────┐    │
-│  │  TERRAIN-AWARE SAFETY LAYER  (100 Hz, paper §III)           │    │
-│  │  Weighted inclination  →  risk normalization  →  LPF(β=0.90)│    │
-│  │  speed_scale = (1 − R_filtered)²       [paper Eq. 11]       │    │
-│  │  E-stop:  pitch > 30° or roll > 40°    [paper Eq. 12]       │    │
-│  │  Flip detect: pitch_rate > 30°/s + pitch > 15°              │    │
-│  └─────────────────────────────────────────────────────────────┘    │
-│                                                                      │
-│  USART6 (PC6=TX, PC7=RX)  ◄──────────────────────────────────────  │
-│  2 Mbaud, micro-ROS custom transport                                 │
-└──────────────────────────────────────────────────────────────────────┘
-                            │ USB-to-TTL (CP2102 / CH340)
-                            ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│             Raspberry Pi 4B  (ROS2 Humble)                          │
-│                                                                      │
-│  micro-ROS agent  ◄──►  STM32 node "terrain_bot/stm32f7_node"      │
-│                                                                      │
-│  Subscribes  /imu/data         sensor_msgs/Imu            100 Hz    │
-│              /wheel_ticks      std_msgs/Int32MultiArray    50 Hz     │
-│              /wheel_velocity   std_msgs/Float32MultiArray  50 Hz     │
-│                                                                      │
-│  Publishes   /cmd_vel          geometry_msgs/Twist  (Nav2 / SLAM)   │
-│              linear.x [m/s] + angular.z [rad/s]                     │
-└──────────────────────────────────────────────────────────────────────┘
+╔══════════════════════════════════════════════════════════════════╗
+║              STM32F746G-DISCO  (real-time controller)           ║
+║                                                                  ║
+║  I2C1 (CN2 connector)                                           ║
+║    PB8 (SCL/D15) ──────► ICM-20948 IMU                        ║
+║    PB9 (SDA/D14)           accel + gyro + AK09916 magnetometer ║
+║                             Madgwick AHRS @ 100 Hz              ║
+║                                                                  ║
+║  EXTI GPIO interrupts (CH_A pulse counting)                     ║
+║    PA0  (A0)  ──────► FL encoder   (Front-Left)                ║
+║    PB4  (D3)  ──────► FR encoder   (Front-Right)               ║
+║    PA15 (D9)  ──────► RL encoder   (Rear-Left)                 ║
+║    PG6  (D2)  ──────► RR encoder   (Rear-Right)                ║
+║                                                                  ║
+║  PWM outputs (20 kHz)                                           ║
+║    PF7 (A4) TIM11 RPWM ──► BTS7960 #1 LEFT ──► FL + RL motors ║
+║    PF6 (A5) TIM10 LPWM ──►                                     ║
+║    PF9 (A2) TIM14 RPWM ──► BTS7960 #2 RIGHT ──► FR + RR motors║
+║    PF8 (A3) TIM13 LPWM ──►                                     ║
+║                                                                  ║
+║  ┌──────────────────────────────────────────────────────────┐   ║
+║  │  TERRAIN SAFETY LAYER  (100 Hz, paper §III)             │   ║
+║  │                                                          │   ║
+║  │  Eq.5:  θ_w = 0.7×|pitch| + 0.3×|roll|                 │   ║
+║  │  Eq.9:  R_incl = clamp((θ_w−10°)/(30°−10°), 0,1)       │   ║
+║  │  Eq.6:  R_shake = |‖a‖ − g_calib| / g_calib            │   ║
+║  │  Eq.8:  R_raw = 0.7×R_incl + 0.3×R_shake               │   ║
+║  │  Eq.10: R_f = 0.90×R_f_prev + 0.10×R_raw               │   ║
+║  │  Eq.11: speed_scale = (1 − R_f)²                        │   ║
+║  │  Eq.12: pitch>30° OR roll>40° → E-stop immediately      │   ║
+║  └──────────────────────────────────────────────────────────┘   ║
+║                                                                  ║
+║  USART6  PC6(TX/D1)  PC7(RX/D0)  2 Mbaud                      ║
+║  ◄──────────────────────────────────────────────────────────    ║
+║                  micro-ROS custom UART transport                 ║
+╚══════════════════════════════════════════════════════════════════╝
+                         │ USB-TTL cable
+                         │ White→D1  Green→D0  Black→GND
+                         ▼
+╔══════════════════════════════════════════════════════════════════╗
+║              Raspberry Pi 4B  (ROS2 Humble)                     ║
+║                                                                  ║
+║  micro_ros_agent  ←──►  STM32 node "terrain_bot/stm32f7_node"  ║
+║                                                                  ║
+║  Subscribes from STM32:                                         ║
+║    /imu/data          sensor_msgs/Imu            @ 100 Hz       ║
+║    /wheel_ticks       std_msgs/Int32MultiArray   @  50 Hz       ║
+║    /wheel_velocity    std_msgs/Float32MultiArray @  50 Hz       ║
+║                                                                  ║
+║  Publishes to STM32:                                            ║
+║    /cmd_vel           geometry_msgs/Twist  (from Nav2/SLAM)     ║
+╚══════════════════════════════════════════════════════════════════╝
 ```
 
 ---
 
-## File structure
+## Code Flow
+
+### Startup Sequence (App_Run)
+
+```
+Power ON
+  │
+  ├─ LCD_Display_Init()
+  │    Draw static dashboard frame
+  │    Show [CALIB..] status
+  │
+  ├─ ICM20948_Init(&hi2c1)
+  │    Soft reset → WHO_AM_I check (0xEA)
+  │    Configure accel ±4g @ 102 Hz
+  │    Configure gyro ±500dps @ 102 Hz
+  │    Start AK09916 magnetometer @ 100 Hz
+  │    Error_Handler() if not found
+  │
+  ├─ Encoder_Init()
+  │    Clear all pulse counts
+  │    Set all directions = forward
+  │
+  ├─ Motor_Init(&htim10, &htim11, &htim13, &htim14)
+  │    Start TIM10/11/13/14 PWM outputs
+  │    Set all duty = 0 (stopped)
+  │
+  ├─ Madgwick_Init(&ahrs, 0.033)
+  │    Identity quaternion [1,0,0,0]
+  │
+  ├─ uros_setup()
+  │    Set UART custom transport
+  │    BLOCK until micro-ROS agent responds on RPi
+  │    Create node "stm32f7_node" in namespace "terrain_bot"
+  │    Advertise /imu/data, /wheel_ticks, /wheel_velocity
+  │    Subscribe /cmd_vel
+  │
+  ├─ Gyro calibration loop (~2 seconds)
+  │    Read IMU 200 times @ 100 Hz
+  │    Accumulate gx,gy,gz,gravity
+  │    Compute bias averages
+  │    LCD shows [CALIB..] during this
+  │    ROBOT MUST BE STILL!
+  │
+  ├─ Seed Madgwick with accel gravity vector
+  │    Compute initial roll/pitch from accel
+  │    Set quaternion from roll/pitch (skip yaw)
+  │    ahrs.initialised = true
+  │
+  └─ Enter main loop
+```
+
+### Main Loop (runs forever @ bare-metal polling)
+
+```
+while(1):
+  │
+  ├─ [every 10ms = 100 Hz] IMU task
+  │    ICM20948_Read() → accel, gyro, mag
+  │    Apply gyro bias correction
+  │    if mag valid → Madgwick_UpdateMARG() [9-DOF]
+  │    else         → Madgwick_UpdateIMU()  [6-DOF]
+  │    update_safety():
+  │      Compute θ_w from pitch + roll (Eq.5)
+  │      Normalize to R_incl (Eq.9)
+  │      Compute R_shake from accel magnitude (Eq.6)
+  │      Combine → R_raw (Eq.8)
+  │      Low-pass filter → R_filtered (Eq.10)
+  │      speed_scale = (1-R)² (Eq.11)
+  │      If pitch>30° or roll>40° → Motor_StopAll() (Eq.12)
+  │
+  ├─ [every 100ms = 10 Hz] Encoder task
+  │    Encoder_Update():
+  │      For each encoder:
+  │        Snapshot pulse_count (disable IRQ briefly)
+  │        speed = pulses × mm_per_tick / dt
+  │        Apply direction sign
+  │        Accumulate distance
+  │
+  ├─ [every 10ms = 100 Hz] PID task
+  │    Check cmd_vel watchdog (500ms timeout)
+  │    If timeout → Motor_StopAll()
+  │    Else → motor_pid_update():
+  │      For LEFT and RIGHT side:
+  │        target   = g_target_mmps[side] × speed_scale
+  │        measured = avg(FL+RL) or avg(FR+RR) encoder vel
+  │        error    = target - measured
+  │        integral += error × dt  (anti-windup ±22.25)
+  │        cmd = target + KP×error + KI×integral
+  │        Motor_SetSide(side, cmd):
+  │          vel>0 → RPWM=duty, LPWM=0  (forward)
+  │          vel<0 → RPWM=0,    LPWM=duty (reverse)
+  │          Encoder_SetDirection() updated
+  │
+  ├─ [every 10ms = 100 Hz] Publish /imu/data
+  │    Quaternion + angular velocity + linear accel
+  │    Covariance matrices from ICM-20948 datasheet
+  │
+  ├─ [every 20ms = 50 Hz] Publish /wheel_ticks + /wheel_velocity
+  │    All 4 encoder tick counts and velocities
+  │
+  ├─ [every 100ms = 10 Hz] LCD update
+  │    Roll/Pitch/Yaw text + colour-coded bars
+  │    FL/FR/RL/RR wheel speed bars (green=fwd, red=rev)
+  │    Risk meter in header
+  │    Safety pitch bar at bottom
+  │
+  └─ rclc_executor_spin_some()
+       Process incoming /cmd_vel if available
+       cmd_vel_callback():
+         vx = linear.x × 1000  (m/s → mm/s)
+         wz = angular.z         (rad/s)
+         left  = vx - wz × wheelbase/2
+         right = vx + wz × wheelbase/2
+         Reset watchdog timer
+```
+
+### Encoder ISR Flow
+
+```
+Rising edge on encoder CH_A pin
+  │
+  ├─ EXTI IRQ fires
+  ├─ HAL_GPIO_EXTI_IRQHandler()
+  ├─ HAL_GPIO_EXTI_Callback(GPIO_Pin)
+  ├─ Encoder_PulseISR(enc_id)
+  │    g_enc[id].pulse_count++
+  │    g_enc[id].total_ticks++
+  └─ Return (< 1 µs total)
+
+Every 100ms — Encoder_Update():
+  speed_mmps = pulse_count × 0.04717mm / 0.1s
+  vel_mmps   = speed_mmps × direction (+1 or -1)
+  dist_mm   += pulses × 0.04717 × direction
+  pulse_count = 0  (reset for next window)
+```
+
+---
+
+## File Structure
 
 ```
 Core/
 ├── Inc/
-│   ├── app.h                   Application entry point declaration
-│   ├── icm20948.h              ICM-20948 9-DOF IMU driver API
-│   ├── madgwick.h              Madgwick AHRS filter (IEEE ICORR 2011)
-│   ├── encoder.h               4-wheel quadrature encoder driver
-│   ├── motor.h                 4-motor PWM velocity driver (TIM1)
-│   ├── lcd_display.h           Built-in 480×272 LCD dashboard
-│   └── microros_transport.h    USART6 micro-ROS transport
+│   ├── app.h                  Entry point declaration
+│   ├── encoder.h              4-wheel interrupt encoder (1 pin/motor)
+│   ├── icm20948.h             ICM-20948 9-DOF IMU driver
+│   ├── lcd_display.h          Graphical dashboard API
+│   ├── madgwick.h             Madgwick AHRS filter (IEEE ICORR 2011)
+│   ├── microros_transport.h   USART6 micro-ROS transport
+│   └── motor.h                2× BTS7960 skid-steer driver
+│
 └── Src/
-    ├── app.c                   Main loop, safety layer, motor PID, ROS bridge
-    ├── icm20948.c              ICM-20948 I2C driver + AK09916 magnetometer
-    ├── madgwick.c              Madgwick MARG/IMU filter (quaternion)
-    ├── encoder.c               Encoder read via TIM5/TIM2/TIM4/TIM3
-    ├── motor.c                 TIM1 PWM + GPIO direction control
-    ├── lcd_display.c           LTDC LCD rendering (BSP)
-    └── microros_transport.c    UART send/receive callbacks for micro-ROS
-PIN_CONNECTIONS.txt             Full wiring table with Arduino and Morpho labels
+    ├── app.c                  Main loop, safety layer, PID, ROS bridge
+    ├── encoder.c              Pulse counting via EXTI interrupts
+    ├── icm20948.c             I2C driver + AK09916 magnetometer
+    ├── lcd_display.c          Full graphical LCD dashboard
+    ├── madgwick.c             Quaternion MARG/IMU filter
+    ├── microros_transport.c   UART send/receive callbacks
+    └── motor.c                BTS7960 RPWM/LPWM PWM control
+
+PIN_CONNECTIONS.txt            Complete wiring table
+SETUP_GUIDE.md                 Step-by-step CubeMX + RPi setup
+README.md                      This file
 ```
 
 ---
 
-## Hardware connections
+## Pin Assignment (Arduino Header Only)
 
-### 1. ICM-20948 (9-DOF IMU)
+| Arduino | STM32 | Function | Timer/Periph |
+|---------|-------|----------|--------------|
+| A0 | PA0 | FL encoder CH_A | EXTI0 |
+| A2 | PF9 | RIGHT BTS RPWM (forward) | TIM14_CH1 |
+| A3 | PF8 | RIGHT BTS LPWM (reverse) | TIM13_CH1 |
+| A4 | PF7 | LEFT BTS RPWM (forward) | TIM11_CH1 |
+| A5 | PF6 | LEFT BTS LPWM (reverse) | TIM10_CH1 |
+| D0 | PC7 | UART RX ← RPi | USART6_RX |
+| D1 | PC6 | UART TX → RPi | USART6_TX |
+| D2 | PG6 | RR encoder CH_A | EXTI6 |
+| D3 | PB4 | FR encoder CH_A | EXTI4 |
+| D9 | PA15 | RL encoder CH_A | EXTI15 |
+| D14 | PB9 | I2C SDA (IMU) | I2C1_SDA |
+| D15 | PB8 | I2C SCL (IMU) | I2C1_SCL |
+| CN2 | — | I2C extension (IMU connector) | I2C1 |
 
-| ICM-20948 pin | Board label | STM32 pin | CubeMX function |
-|---------------|-------------|-----------|-----------------|
-| VCC           | 3V3         | —         | Power           |
-| GND           | GND         | —         | Ground          |
-| SCL           | SCL         | PB8       | I2C1_SCL        |
-| SDA           | SDA         | PB9       | I2C1_SDA        |
-| AD0           | GND         | —         | I2C addr = 0x68 |
-| INT           | D2 (opt.)   | PG6       | EXTI (optional) |
-
-> The SCL/SDA labels are on the left side of the Arduino header, separate from D0-D13.
-
----
-
-### 2. micro-ROS UART (STM32 ↔ Raspberry Pi)
-
-| Cable wire    | Board label | STM32 pin | Direction        |
-|---------------|-------------|-----------|------------------|
-| RXD (white)   | D1          | PC6       | STM32 TX → RPi   |
-| TXD (green)   | D0          | PC7       | RPi TX → STM32   |
-| GND (black)   | GND         | —         | Common ground    |
-| VCC (red)     | —           | —         | **Do NOT connect** |
-
-Baud rate: **2 000 000** (2 Mbaud), 8N1, no flow control.
-
-On the Raspberry Pi:
-```bash
-ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyUSB0 -b 2000000
-```
+**Free pins (available for expansion):**
+D4(PG7), D5(PI0), D6(PH6), D7(PI3), D8(PI2), D10(PA8),
+D11(PB15), D12(PB14), A1(PF10)
 
 ---
 
-### 3. Encoders (4× RMCS-3070)
+## Hardware Connections
 
-| Motor        | Timer | CH_A label        | CH_A pin | CH_B label         | CH_B pin |
-|--------------|-------|-------------------|----------|--------------------|----------|
-| Front-Left   | TIM5  | A0 (Arduino)      | PA0      | A1 (Arduino)       | PA1      |
-| Front-Right  | TIM2  | D9 (Arduino)      | PA15     | Morpho CN2 pin 15  | PB3      |
-| Rear-Left    | TIM4  | Morpho CN2 pin 13 | PB6      | Morpho CN2 pin 11  | PB7      |
-| Rear-Right   | TIM3  | D3 (Arduino)      | PB4      | Morpho CN2         | PB5      |
+### BTS7960 Wiring
 
-Encoder cable colour code (RMCS-3070):
-
-| Wire colour | Connect to              |
-|-------------|-------------------------|
-| Red         | 5V (encoder VCC)        |
-| Black       | GND                     |
-| Green       | CH_A (timer CH1 pin)    |
-| White       | CH_B (timer CH2 pin)    |
-
----
-
-### 4. Motor PWM + direction (4× H-bridge)
-
-One H-bridge driver per motor (e.g. L298N, TB6612FNG, DRV8833):
-
-| Motor        | PWM pin         | STM32 pin | Direction pin | STM32 pin |
-|--------------|-----------------|-----------|---------------|-----------|
-| Front-Left   | TIM1_CH1        | PA8 (D10) | PG6 (D2)      | DIR GPIO  |
-| Front-Right  | TIM1_CH2 (Morpho)| PE11     | PG7 (D4)      | DIR GPIO  |
-| Rear-Left    | TIM1_CH3 (Morpho)| PE13     | PI3 (D7)      | DIR GPIO  |
-| Rear-Right   | TIM1_CH4 (Morpho)| PE14     | PI2 (D8)      | DIR GPIO  |
-
-H-bridge wiring per motor:
 ```
-STM32 PWM pin  →  ENA  (speed)
-STM32 DIR pin  →  IN1  (direction)
-GND            →  IN2  (keep LOW for single DIR logic)
-Motor terminals → motor A / B
+BTS7960 #1 (LEFT)          BTS7960 #2 (RIGHT)
+─────────────────          ──────────────────
+RPWM ← A4 (PF7)           RPWM ← A2 (PF9)
+LPWM ← A5 (PF6)           LPWM ← A3 (PF8)
+R_EN → 3.3V (always HIGH)  R_EN → 3.3V
+L_EN → 3.3V (always HIGH)  L_EN → 3.3V
+VCC  → 5V                  VCC  → 5V
+GND  → GND                 GND  → GND
+B+/B- → FL + RL motors     B+/B- → FR + RR motors
+M+/M- → 12V supply         M+/M- → 12V supply
 ```
 
-> **Right-side motors** (FR, RR) are physically mirror-mounted. The firmware
-> handles this automatically via `MOTOR_POLARITY[]` in `motor.c`.
-> If a wheel spins backwards, change its polarity from `-1` to `+1`.
-
----
-
-## CubeMX configuration
-
-Open CubeMX (or the `.ioc` file) and configure:
-
-### Existing peripherals (unchanged)
-
-| Peripheral | Mode         | Settings                                    |
-|------------|--------------|---------------------------------------------|
-| I2C1       | I2C          | Fast Mode, 400 kHz; SDA=PB9, SCL=PB8       |
-| USART6     | Asynchronous | 2 000 000 baud, 8N1, no flow; TX=PC6, RX=PC7|
-| TIM5       | Encoder      | CH1=PA0, CH2=PA1, Period=65535, Filter=4    |
-| TIM2       | Encoder      | CH1=PA15, CH2=PB3, Period=65535, Filter=4   |
-| LTDC       | Built-in LCD | Default BSP config (480×272)                |
-
-### New peripherals (add these)
-
-| Peripheral | Mode         | Settings                                              |
-|------------|--------------|-------------------------------------------------------|
-| TIM4       | Encoder      | CH1=PB6, CH2=PB7, Period=65535, Filter=4              |
-| TIM3       | Encoder      | CH1=PB4, CH2=PB5, Period=65535, Filter=4              |
-| TIM1       | PWM (4-ch)   | PSC=0, ARR=10799 → 20 kHz; CH1=PA8, CH2=PE11, CH3=PE13, CH4=PE14 |
-| PG6        | GPIO_Output  | Motor FL direction (Label: `MOTOR_FL_DIR`)            |
-| PG7        | GPIO_Output  | Motor FR direction (Label: `MOTOR_FR_DIR`)            |
-| PI3        | GPIO_Output  | Motor RL direction (Label: `MOTOR_RL_DIR`)            |
-| PI2        | GPIO_Output  | Motor RR direction (Label: `MOTOR_RR_DIR`)            |
-
-TIM1 PWM settings (applies to all 4 channels):
+BTS7960 control logic:
 ```
-Prescaler (PSC)     : 0
-Counter Period (ARR): 10799       → 216 MHz / 10800 = 20 kHz
-Auto-reload preload : Enable
-PWM Mode            : Mode 1
-Polarity            : High
+Forward: RPWM = PWM duty,  LPWM = 0
+Reverse: RPWM = 0,          LPWM = PWM duty
+Stop:    RPWM = 0,          LPWM = 0
 ```
 
-All encoder timer settings:
+### RMCS-3070 Encoder Wiring
+
 ```
-Combined Channels   : Encoder Mode TI1 and TI2
-Counter Period      : 65535
-Prescaler           : 0
-CH1/CH2 Polarity    : Rising Edge
-Input Filter        : 4
+Wire Colour   Connect To
+Red        →  5V
+Black      →  GND
+Green      →  CH_A pin (A0/D3/D9/D2 per motor)
+White      →  not connected (CH_B, future use)
+Yellow     →  BTS7960 motor output +
+Blue       →  BTS7960 motor output -
+```
+
+### ICM-20948 via CN2
+
+```
+CN2 Pin 1 → I2C_SDA (PB9)
+CN2 Pin 3 → I2C_SCL (PB8)
+CN2 Pin 5 → +3V3
+CN2 Pin 7 → GND
+ICM AD0   → GND (address = 0x68)
+```
+
+### USB-TTL Cable to Raspberry Pi
+
+```
+White (RXD) → D1 (PC6)   STM32 TX
+Green (TXD) → D0 (PC7)   STM32 RX
+Black (GND) → GND
+Red/Yellow/Blue → DO NOT CONNECT
 ```
 
 ---
 
-## Integration into a CubeMX project
-
-```
-1. Generate CubeMX project for STM32F746G-DISCO
-2. Configure all peripherals listed above
-3. Copy these files into the generated project:
-      Core/Inc/  →  app.h  icm20948.h  madgwick.h  encoder.h
-                     motor.h  lcd_display.h  microros_transport.h
-      Core/Src/  →  app.c  icm20948.c  madgwick.c  encoder.c
-                     motor.c  lcd_display.c  microros_transport.c
-4. In Core/Src/main.c, add at the bottom of main() before the while(1):
-      App_Run();   /* does not return */
-5. Link the micro-ROS static library (follow micro-ROS STM32 build guide)
-6. Build and flash (STM32CubeIDE or STM32CubeProgrammer)
-```
-
----
-
-## Flashing to the STM32F746G-DISCO
-
-### Method 1 — STM32CubeIDE (recommended)
-
-```
-1. File → Import → Existing project into workspace
-2. Build Project  (Ctrl+B)
-3. Connect the board via ST-LINK USB (the USB connector labeled "ST-LINK")
-4. Run → Debug (F11)  or  Run → Run (Ctrl+F11)
-```
-
-### Method 2 — STM32CubeProgrammer (CLI)
-
-```bash
-# Windows PowerShell
-STM32_Programmer_CLI.exe -c port=SWD -w build/terrain_bot.elf -v -rst
-```
-
-### Method 3 — Drag-and-drop (mass storage mode)
-
-```
-1. Press and hold the blue USER button, then press RESET
-2. Board appears as USB mass storage "DIS_F746NG"
-3. Drag and drop the .bin file from build/ onto the drive
-4. Press RESET to boot the new firmware
-```
-
----
-
-## ROS2 side (Raspberry Pi 4B)
-
-### 1. Start micro-ROS agent
-
-```bash
-# Install micro-ROS agent if not already done
-pip install micro-ros-agent   # or build from source
-
-# Start agent (replace ttyUSB0 with your device)
-ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyUSB0 -b 2000000
-```
-
-### 2. Verify STM32 topics are live
-
-```bash
-ros2 topic list
-# Should show:
-# /terrain_bot/imu/data
-# /terrain_bot/wheel_ticks
-# /terrain_bot/wheel_velocity
-
-ros2 topic hz /terrain_bot/imu/data        # should read ~100 Hz
-ros2 topic hz /terrain_bot/wheel_velocity  # should read ~50 Hz
-```
-
-### 3. Send velocity commands (manual test)
-
-```bash
-# Drive forward at 30 mm/s
-ros2 topic pub /cmd_vel geometry_msgs/msg/Twist \
-  "{linear: {x: 0.030}, angular: {z: 0.0}}" --once
-
-# Turn in place
-ros2 topic pub /cmd_vel geometry_msgs/msg/Twist \
-  "{linear: {x: 0.0}, angular: {z: 0.5}}" --once
-
-# Stop
-ros2 topic pub /cmd_vel geometry_msgs/msg/Twist \
-  "{linear: {x: 0.0}, angular: {z: 0.0}}" --once
-```
-
-> **cmd_vel watchdog:** If no `/cmd_vel` is received for 500 ms, the STM32
-> automatically stops all motors and resets the velocity integrators.
-> This protects the robot if ROS2 or the network goes down.
-
-### 4. SLAM integration (Nav2)
-
-The STM32 is a drop-in actuator for any ROS2 nav stack. Typical setup:
-
-```bash
-# Example: run slam_toolbox + Nav2
-ros2 launch slam_toolbox online_async_launch.py
-ros2 launch nav2_bringup navigation_launch.py
-```
-
-Nav2 publishes `/cmd_vel` automatically. The STM32 converts it to wheel
-velocities using differential-drive kinematics and runs a closed-loop
-velocity PI controller.
-
----
-
-## Terrain-aware safety layer
+## Safety Layer
 
 Based on:
-> Mourougane R., Dhanalakshmi S. *"Terrain-Aware Velocity Regulation for Mobile
-> Robots via Lightweight Execution-Level Safety Layer."*
-> SRM Institute of Science and Technology, Kattankulatham.
+> Mourougane R., Dhanalakshmi S. *"Terrain-Aware Velocity Regulation for
+> Mobile Robots via Lightweight Execution-Level Safety Layer."*
+> SRM Institute of Science and Technology.
 
-The safety layer runs **entirely on the STM32 at 100 Hz**, making immediate
-hardware-level decisions without waiting for ROS.
+Runs entirely on STM32 at 100 Hz — no ROS latency involved.
 
-### Formula chain (paper §III)
-
-```
-Step 1 — Inclination  (Eq. 5)
-  θ_w = 0.7 × |pitch_deg| + 0.3 × |roll_deg|
-  (pitch weighted higher = slope risk; roll = lateral instability)
-
-Step 2 — Normalize to [0, 1]  (Eq. 9)
-  R_incl = clamp((θ_w − 10°) / (30° − 10°), 0, 1)
-  (0 in safe zone <10°, ramps to 1 at critical threshold 30°)
-
-Step 3 — Terrain shake  (Eq. 6-7)
-  R_shake = |‖a‖ − g_calib| / g_calib
-  (captures bumps and surface vibrations)
-
-Step 4 — Combined risk  (Eq. 8)
-  R_raw = 0.7 × R_incl + 0.3 × R_shake
-
-Step 5 — Low-pass filter  β = 0.90  (Eq. 10)
-  R_f = 0.90 × R_f_prev + 0.10 × R_raw
-  (smooths noise spikes from uneven terrain)
-
-Step 6 — Nonlinear velocity scale  (Eq. 11)
-  speed_scale = (1 − R_f)²
-  (quadratic: gentle at low risk, exponential deceleration at high risk)
-
-Step 7 — Hard E-stop  (Eq. 12)
-  if pitch > 30° OR roll > 40°  →  speed_scale = 0, motors stop immediately
-
-Step 8 — Forward-flip detection  (paper §VI)
-  if |pitch_rate| > 30°/s AND pitch > 15°  →  E-stop
-```
-
-### Speed zones (from paper Fig. 5)
-
-| Zone    | Pitch range | speed_scale  | Behaviour                     |
-|---------|-------------|--------------|-------------------------------|
-| Safe    | 0 – 10°     | 1.00         | Full commanded speed          |
-| Caution | 10 – 30°    | (1−R)² curve | Progressive deceleration      |
-| E-stop  | > 30°       | 0.00         | Immediate motor stop          |
-
-Validated across 10 000+ data points in Gazebo (construction, inspection, ramp worlds).
-Up to **77% velocity reduction** on steep slopes.
+| Zone | Pitch | speed_scale | Behaviour |
+|------|-------|-------------|-----------|
+| Safe | 0–10° | 1.00 | Full commanded speed |
+| Caution | 10–30° | (1−R)² curve | Progressive deceleration |
+| E-stop | >30° | 0.00 | Immediate motor stop |
 
 ---
 
-## Motor velocity PI controller
+## LCD Dashboard
 
-Each motor has its own closed-loop velocity PI controller running at 100 Hz.
+The built-in 4.3" display (480×272, back side of board) shows live data:
 
 ```
-target  = cmd_vel_target × speed_scale      ← safety scale applied first
-error   = target − encoder_velocity          ← from quadrature counter
-integral += error × dt                       ← anti-windup: ±ILIMIT
-cmd     = target + KP×error + KI×integral   ← feed-forward + PI correction
-Motor_Set(motor, cmd)                        ← velocity → PWM duty
+┌──────────────────────────────────────────────────────────────┐
+│ STM32 TERRAIN BOT    RISK:[████░░░░]            [ RUN ]      │
+├───────────────────────┬──────────────────────────────────────┤
+│ IMU ORIENTATION       │ WHEEL SPEEDS (mm/s)                  │
+│ Roll : +012.3°        │ FL [████████████░] +32.1             │
+│ ░░orange bar░░░       │ FR [████████░░░░░] +22.5             │
+│ Pitch: -005.7°        │ RL [████████████░] +31.8             │
+│ ░░blue bar░░░░        │ RR [████████░░░░░] +22.1             │
+│ Yaw  : +089.1°        │                                      │
+│ ░░purple bar░░        │                                      │
+├───────────────────────┴──────────────────────────────────────┤
+│ PITCH SAFETY   [████░░░░░░░░░░░░░░░░]   -005.7°             │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-Default gains (tune for your motors):
-
-| Parameter | Value    | Description                          |
-|-----------|----------|--------------------------------------|
-| KP        | 0.5      | Proportional gain                    |
-| KI        | 0.1      | Integral gain                        |
-| ILIMIT    | 22.25 mm/s | Anti-windup clamp (½ max speed)    |
-
----
-
-## Madgwick AHRS filter
-
-### Why Madgwick over a complementary filter?
-
-| Property       | Complementary filter | Madgwick AHRS        |
-|----------------|----------------------|----------------------|
-| Representation | Euler angles         | Unit quaternion      |
-| Gimbal lock    | Yes (at ±90° pitch)  | No                   |
-| Yaw observable | No (drifts)          | Yes (with mag)       |
-| Tuning params  | 1 (α)                | 1 (β)                |
-| Modes          | IMU only             | IMU + MARG (9-DOF)   |
-
-β = 0.033 (tuned for ICM-20948 @ 102 Hz, per Madgwick 2011 §IV-C).
-
-MARG mode (9-DOF) is used when magnetometer data is valid.
-Falls back to IMU-only (6-DOF) when `mx=my=mz=0`.
+Colour coding:
+- 🟢 Green = safe / forward
+- 🟡 Amber = caution (>15° or risk >30%)
+- 🔴 Red = danger (>25° or risk >70%) / reverse motion
+- 🔵 Blue = pitch bar
+- 🟠 Orange = roll bar
+- 🟣 Purple = yaw bar
 
 ---
 
-## Encoder specifications (RMCS-3070)
-
-| Parameter           | Value         | Derivation                  |
-|---------------------|---------------|-----------------------------|
-| Output shaft speed  | 100 RPM       | datasheet (no load, 12 V)   |
-| Gear ratio          | 51.45:1       | datasheet                   |
-| Encoder PPR (motor) | 11            | datasheet (Hall effect)     |
-| Ticks per wheel rev | 2264          | 11 × 51.45 × 4 (quadrature)|
-| Wheel diameter      | 8.5 mm        | measured                    |
-| Wheel circumference | 26.70 mm      | π × 8.5                     |
-| mm per tick         | 0.01179 mm    | 26.70 / 2264                |
-| Max wheel speed     | 44.5 mm/s     | 100/60 × 26.70              |
-| Wheelbase           | 200 mm        | measured (L-to-R centres)   |
-
-> Update `ENC_WHEEL_DIAM_MM` and `ENC_WHEELBASE_MM` in `encoder.h` if your
-> wheels or chassis differ from the values above.
-
----
-
-## micro-ROS topics
+## micro-ROS Topics
 
 ### Published (STM32 → ROS2)
 
-| Topic             | Type                         | Rate   | Content                                     |
-|-------------------|------------------------------|--------|---------------------------------------------|
-| `/imu/data`       | `sensor_msgs/Imu`            | 100 Hz | Quaternion [w,x,y,z], angular vel, accel    |
-| `/wheel_ticks`    | `std_msgs/Int32MultiArray`   | 50 Hz  | [FL, FR, RL, RR] accumulated ticks         |
-| `/wheel_velocity` | `std_msgs/Float32MultiArray` | 50 Hz  | [FL, FR, RL, RR] velocity in mm/s          |
-
-Array order: `[0]=FL, [1]=FR, [2]=RL, [3]=RR`
-
-IMU covariance (from ICM-20948 datasheet):
-```
-orientation_covariance      = diag(1e-4, 1e-4, 1e-4)   rad²
-angular_velocity_covariance = diag(6.86e-6, …)          (rad/s)²
-linear_accel_covariance     = diag(5.09e-4, …)          (m/s²)²
-```
+| Topic | Type | Rate | Content |
+|-------|------|------|---------|
+| `/imu/data` | `sensor_msgs/Imu` | 100 Hz | Quaternion, angular vel, linear accel |
+| `/wheel_ticks` | `std_msgs/Int32MultiArray` | 50 Hz | [FL,FR,RL,RR] total pulse counts |
+| `/wheel_velocity` | `std_msgs/Float32MultiArray` | 50 Hz | [FL,FR,RL,RR] speed in mm/s |
 
 ### Subscribed (ROS2 → STM32)
 
-| Topic      | Type                      | Content                              |
-|------------|---------------------------|--------------------------------------|
-| `/cmd_vel` | `geometry_msgs/Twist`     | `linear.x` [m/s], `angular.z` [rad/s]|
+| Topic | Type | Content |
+|-------|------|---------|
+| `/cmd_vel` | `geometry_msgs/Twist` | `linear.x` [m/s], `angular.z` [rad/s] |
 
-Differential-drive conversion:
+Kinematics:
 ```
-v_left  = linear.x × 1000  −  angular.z × (wheelbase / 2)   [mm/s]
-v_right = linear.x × 1000  +  angular.z × (wheelbase / 2)   [mm/s]
-FL = RL = v_left
-FR = RR = v_right
+v_left  = linear.x × 1000 − angular.z × (wheelbase/2)   [mm/s]
+v_right = linear.x × 1000 + angular.z × (wheelbase/2)   [mm/s]
 ```
 
 ---
 
-## LCD dashboard (built-in 4.3" display)
+## Encoder Specifications
 
-The 480×272 LTDC display shows live sensor data at 10 Hz:
-
-```
-┌──────────────────────────────────────────┐
-│   STM32 TERRAIN BOT          [  RUN  ]   │
-├──────────────────────────────────────────┤
-│  IMU - ORIENTATION                       │
-│  Roll  :  +012.34 deg                    │
-│  Pitch :  -005.67 deg                    │
-│  Yaw   :  +089.01 deg                    │
-├──────────────────────────────────────────┤
-│  WHEEL VELOCITY                          │
-│  Left  :  +032.10 mm/s    (FL encoder)   │
-│  Right :  +031.80 mm/s    (FR encoder)   │
-├──────────────────────────────────────────┤
-│  [=========>              ]  pitch bar   │
-└──────────────────────────────────────────┘
-```
-
-Status indicator: `[CALIB..]` during 2-second gyro calibration, `[RUN]` after.
+| Parameter | Value | How |
+|-----------|-------|-----|
+| PPR (motor shaft) | 11 | RMCS-3070 datasheet |
+| Gear ratio | 51.45:1 | RMCS-3070 datasheet |
+| Ticks per wheel rev | 566 | 11 × 51.45 (single channel) |
+| Wheel diameter | 8.5 mm | Measured |
+| Wheel circumference | 26.70 mm | π × 8.5 |
+| mm per tick | 0.04717 mm | 26.70 / 566 |
+| Max speed | 44.5 mm/s | 100 RPM × 26.70mm / 60s |
+| Wheelbase | 200 mm | Measured |
 
 ---
 
-## Startup sequence
+## Motor PI Controller
 
 ```
-Power on
-  │
-  ├─ LCD_Display_Init()
-  ├─ ICM20948_Init()          — verify WHO_AM_I = 0xEA, configure AK09916
-  ├─ Encoder_Init()           — start TIM5, TIM2, TIM4, TIM3 in encoder mode
-  ├─ Motor_Init()             — start TIM1 PWM, all channels at 0% duty
-  ├─ Madgwick_Init()          — identity quaternion [1,0,0,0]
-  ├─ uros_setup()             — wait for micro-ROS agent on Raspberry Pi
-  │                             (blocks until agent responds)
-  ├─ Gyro calibration (~2 s)  — robot must be completely still
-  │     200 samples → bias for gx, gy, gz, and gravity magnitude
-  ├─ Seed Madgwick            — initial quaternion from accel gravity vector
-  │
-  └─ Main loop (100 Hz)
-        ├─ ICM20948_Read()    — 23-byte burst read (accel+gyro+mag)
-        ├─ Madgwick_Update()  — MARG or IMU-only depending on mag validity
-        ├─ Madgwick_GetEuler()— update roll/pitch/yaw in radians
-        ├─ update_safety()    — paper §III: risk → speed_scale
-        ├─ Encoder_Update()   — read all 4 quadrature counters
-        ├─ watchdog check     — stop if no /cmd_vel for 500 ms
-        ├─ motor_pid_update() — PI per motor using encoder velocity
-        ├─ publish_imu()      — 100 Hz
-        ├─ publish_encoders() — 50 Hz
-        ├─ LCD_Display_Update()— 10 Hz
-        └─ executor_spin_some()— process incoming /cmd_vel
+Per side (LEFT / RIGHT), runs at 100 Hz:
+
+target   = cmd_vel_target × safety_scale
+measured = average encoder velocity of both motors on that side
+error    = target - measured
+integral += error × dt          (anti-windup: ±22.25 mm/s)
+output   = target + KP×error + KI×integral
+
+KP = 0.5   KI = 0.1
 ```
+
+Feed-forward term ensures the motor tracks the target even on flat ground,
+while PI corrects for terrain-induced speed changes.
 
 ---
 
-## Troubleshooting
+## Phase 2 Roadmap — MCP23017
 
-| Symptom | Likely cause | Fix |
-|---------|--------------|-----|
-| `ICM20948_Init` fails | Wrong I2C wiring or AD0 not grounded | Check SDA/SCL, verify AD0=GND |
-| Robot never leaves CALIB screen | micro-ROS agent not running | Start agent on RPi first |
-| `/imu/data` stops at 0 Hz | USART6 wiring issue | Swap TX/RX wires |
-| Motors don't move | TIM1 not configured or H-bridge not powered | Check CubeMX TIM1 + 12V supply |
-| One motor spins backwards | Mirror-mounted motor polarity wrong | Change `MOTOR_POLARITY[i]` in `motor.c` |
-| Robot tips over | E-stop thresholds too conservative | Increase `SAFETY_ESTOP_PITCH/ROLL` in `app.c` |
-| Speed always reduced | Flat terrain reading high risk | Re-run gyro calib on flat surface |
-| Encoder counts wrong | Filter value too low | Set Input Filter = 4 in CubeMX for all encoder timers |
+When the CJMCU-2317 MCP23017 arrives:
+
+```
+Connect to CN2:
+  VCC → Pin 5,  GND → Pin 7
+  SDA → Pin 1,  SCL → Pin 3
+  A0,A1,A2 → GND  (I2C address 0x20)
+  INTA → D5 (PI0),  INTB → D7 (PI3)
+
+GPA0 → FL encoder CH_B
+GPA1 → FR encoder CH_B
+GPA2 → RL encoder CH_B
+GPA3 → RR encoder CH_B
+
+Benefit:
+  Full quadrature counting (direction from encoder itself)
+  Accurate reverse odometry
+  Better SLAM map quality
+  Slip detection in both directions
+```
 
 ---
 
 ## References
 
-1. **Mourougane R., Dhanalakshmi S.** (2024). *"Terrain-Aware Velocity Regulation
-   for Mobile Robots via Lightweight Execution-Level Safety Layer."*
-   SRM Institute of Science and Technology.
-   *(Safety layer Eq. 5–12, speed zones, β=0.90 LPF)*
+1. **Mourougane R., Dhanalakshmi S.** (2024). *"Terrain-Aware Velocity
+   Regulation for Mobile Robots via Lightweight Execution-Level Safety
+   Layer."* SRM Institute of Science and Technology.
 
 2. **Madgwick S.O.H., Harrison A.J.L., Vaidyanathan R.** (2011).
-   *"Estimation of IMU and MARG orientation using a gradient descent algorithm."*
-   Proc. IEEE ICORR, pp. 1-7.
-   doi:[10.1109/ICORR.2011.5975346](https://doi.org/10.1109/ICORR.2011.5975346)
+   *"Estimation of IMU and MARG orientation using a gradient descent
+   algorithm."* IEEE ICORR. doi:10.1109/ICORR.2011.5975346
 
 3. **InvenSense** (2019). *ICM-20948 Product Specification Rev 1.3.*
-   TDK InvenSense, San Jose, CA.
 
-4. **STMicroelectronics** (2015). *UM1906 — STM32F746G-DISCO User Manual.*
-   [st.com/resource/en/user_manual/um1906.pdf](https://www.st.com/resource/en/user_manual/um1906.pdf)
+4. **STMicroelectronics** (2025). *UM1907 Rev 6 — STM32F746G-DISCO
+   User Manual.*
