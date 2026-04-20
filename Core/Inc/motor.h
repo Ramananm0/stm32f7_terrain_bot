@@ -1,47 +1,36 @@
 /**
- * motor.h — 2× BTS7960 skid-steer motor driver
- * STM32F746G-DISCO (Arduino header only)
+ * motor.h — 4× BTS7960 individual motor driver (true 4WD)
+ * STM32F746G-DISCO
  *
- * ── BTS7960 wiring ───────────────────────────────────────────────────
+ * ── Voltage protection ───────────────────────────────────────────────
+ *   Battery: 12.4V nominal, up to 14V fully charged
+ *   Motor rated: 12V (RMCS-3070)
+ *   Max safe duty: 12V / 14V × ARR = 85.7% × 10799 = 9255
+ *   This limits effective voltage to 12V at full speed.
  *
- *   BTS7960 #1 = LEFT  side (FL + RL motors in parallel)
- *   BTS7960 #2 = RIGHT side (FR + RR motors in parallel)
+ * ── Soft start ───────────────────────────────────────────────────────
+ *   PWM ramps from current duty to target over RAMP_MS milliseconds.
+ *   Prevents current spikes on motor startup.
  *
- *   Each BTS7960:
- *     RPWM → forward PWM  (STM32 timer)
- *     LPWM → reverse PWM  (STM32 timer)
- *     R_EN → tie to 3.3V  (always enabled)
- *     L_EN → tie to 3.3V  (always enabled)
- *     RIS  → leave unconnected (current sense, optional)
- *     LIS  → leave unconnected
- *     VCC  → 5V
- *     GND  → GND (common with STM32)
+ * ── BTS7960 wiring per motor ─────────────────────────────────────────
+ *   RPWM → forward PWM  (STM32 timer)
+ *   LPWM → reverse PWM  (STM32 timer)
+ *   R_EN → 3.3V (always HIGH)
+ *   L_EN → 3.3V (always HIGH)
+ *   RIS  → not connected
+ *   LIS  → not connected
  *
- * ── PWM Pin Assignment (all Arduino header) ──────────────────────────
- *
- *   LEFT  BTS7960:
- *     RPWM ← A4 (PF7)  TIM11_CH1  forward
- *     LPWM ← A5 (PF6)  TIM10_CH1  reverse
- *
- *   RIGHT BTS7960:
- *     RPWM ← A2 (PF9)  TIM14_CH1  forward
- *     LPWM ← A3 (PF8)  TIM13_CH1  reverse
+ * ── Pin assignment (all Arduino header) ──────────────────────────────
+ *   FL: RPWM=A4(PF7/TIM11_CH1)  LPWM=A5(PF6/TIM10_CH1)
+ *   FR: RPWM=A2(PF9/TIM14_CH1)  LPWM=A3(PF8/TIM13_CH1)
+ *   RL: RPWM=D6(PH6/TIM12_CH1)  LPWM=D11(PB15/TIM12_CH2)
+ *   RR: RPWM=D10(PA8/TIM1_CH1)  LPWM=D3(PB4/TIM3_CH1)
  *
  * ── CubeMX settings ──────────────────────────────────────────────────
- *   TIM10: PWM CH1, pin=PF6, PSC=0, ARR=10799 (20kHz), Mode1, High
- *   TIM11: PWM CH1, pin=PF7, PSC=0, ARR=10799 (20kHz), Mode1, High
- *   TIM13: PWM CH1, pin=PF8, PSC=0, ARR=10799 (20kHz), Mode1, High
- *   TIM14: PWM CH1, pin=PF9, PSC=0, ARR=10799 (20kHz), Mode1, High
- *
- * ── BTS7960 direction logic ──────────────────────────────────────────
- *   Forward : RPWM = duty (0-ARR),  LPWM = 0
- *   Reverse : RPWM = 0,             LPWM = duty
- *   Stop    : RPWM = 0,             LPWM = 0
- *
- * ── 2WD → 4WD upgrade ────────────────────────────────────────────────
- *   2WD: connect 1 motor per BTS (FL on BTS#1, FR on BTS#2)
- *   4WD: add RL to BTS#1 output, RR to BTS#2 output
- *   NO firmware change needed — just wiring change!
+ *   TIM10/11/13/14: PWM CH1, PSC=0, ARR=10799, Mode1, High
+ *   TIM12: PWM CH1+CH2, PSC=0, ARR=10799, Mode1, High
+ *   TIM1:  PWM CH1 only, PSC=0, ARR=10799, Mode1, High
+ *   TIM3:  PWM CH1 only, PSC=0, ARR=10799, Mode1, High
  */
 
 #ifndef MOTOR_H
@@ -50,56 +39,67 @@
 #include "stm32f7xx_hal.h"
 #include <stdint.h>
 
+/* ── Motor indices ───────────────────────────────────────────────── */
+typedef enum {
+    MOTOR_FL  = 0,
+    MOTOR_FR  = 1,
+    MOTOR_RL  = 2,
+    MOTOR_RR  = 3,
+    MOTOR_NUM = 4
+} Motor_ID;
+
 /* ── Physical speed limit ────────────────────────────────────────── */
-/* RMCS-3070 @ 12V: 100 RPM × π × 8.5mm / 60s = 44.5 mm/s          */
 #define MOTOR_MAX_SPEED_MMPS   44.5f
 
-/* ARR value — must match CubeMX TIM10/11/13/14 ARR setting          */
-/* PSC=0, ARR=10799 → 216MHz / 10800 = 20kHz PWM                    */
+/* ── PWM constants ───────────────────────────────────────────────── */
+/* PSC=0, ARR=10799 → 216MHz/10800 = 20kHz                           */
 #define MOTOR_PWM_ARR          10799u
 
-/* Anti-windup clamp for velocity PI integrator                       */
-#define MOTOR_ILIMIT           (MOTOR_MAX_SPEED_MMPS * 0.5f)
+/* ── Voltage protection ──────────────────────────────────────────── */
+/* Battery max 14V, motor rated 12V                                   */
+/* Max duty = 12/14 × 10799 = 9256                                   */
+#define MOTOR_BATTERY_MAX_V    14.0f
+#define MOTOR_RATED_V          12.0f
+#define MOTOR_MAX_DUTY         ((uint32_t)(MOTOR_PWM_ARR * \
+                                 (MOTOR_RATED_V / MOTOR_BATTERY_MAX_V)))
 
-/* ── Side identifiers ────────────────────────────────────────────── */
-typedef enum {
-    SIDE_LEFT  = 0,   /* BTS7960 #1 → FL + RL motors */
-    SIDE_RIGHT = 1,   /* BTS7960 #2 → FR + RR motors */
-    SIDE_NUM   = 2
-} Motor_Side;
+/* ── Soft start ──────────────────────────────────────────────────── */
+/* Ramp time in ms — duty changes by max RAMP_STEP per PID cycle     */
+#define MOTOR_RAMP_STEP        200u    /* max duty change per 10ms    */
+
+/* ── Anti-windup ─────────────────────────────────────────────────── */
+#define MOTOR_ILIMIT           (MOTOR_MAX_SPEED_MMPS * 0.5f)
 
 /* ── API ─────────────────────────────────────────────────────────── */
 
 /**
- * @brief Init both BTS7960 drivers, start PWM outputs.
- *        Call after MX_TIM10/11/13/14_Init().
- *
- * @param htim10  TIM10 handle (LEFT  LPWM = A5/PF6)
- * @param htim11  TIM11 handle (LEFT  RPWM = A4/PF7)
- * @param htim13  TIM13 handle (RIGHT LPWM = A3/PF8)
- * @param htim14  TIM14 handle (RIGHT RPWM = A2/PF9)
+ * @brief Init all 4 BTS7960 motor drivers.
+ *        Call after all MX_TIMxx_Init() calls.
  */
 void Motor_Init(TIM_HandleTypeDef *htim10,
                 TIM_HandleTypeDef *htim11,
+                TIM_HandleTypeDef *htim12,
                 TIM_HandleTypeDef *htim13,
-                TIM_HandleTypeDef *htim14);
+                TIM_HandleTypeDef *htim14,
+                TIM_HandleTypeDef *htim1,
+                TIM_HandleTypeDef *htim3);
 
 /**
- * @brief Set velocity for one side.
- * @param side      SIDE_LEFT or SIDE_RIGHT
+ * @brief Set velocity for one motor individually.
+ * @param id        MOTOR_FL, MOTOR_FR, MOTOR_RL, MOTOR_RR
  * @param vel_mmps  +ve=forward, -ve=reverse. Clamped ±44.5 mm/s.
  */
-void Motor_SetSide(Motor_Side side, float vel_mmps);
+void Motor_Set(Motor_ID id, float vel_mmps);
 
 /**
- * @brief Stop both sides immediately (zero duty on all PWM pins).
+ * @brief Stop all motors immediately.
  */
 void Motor_StopAll(void);
 
 /**
- * @brief Get current direction of a side.
+ * @brief Get current direction of a motor.
  * @return 1=forward, -1=reverse, 0=stopped
  */
-int8_t Motor_GetDirection(Motor_Side side);
+int8_t Motor_GetDirection(Motor_ID id);
 
 #endif /* MOTOR_H */
