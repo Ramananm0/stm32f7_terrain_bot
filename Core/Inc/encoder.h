@@ -1,85 +1,104 @@
 /**
- * encoder.h  —  Quadrature encoder driver  (4× RMCS-3070 motors)
- * Board : STM32F746G-DISCO
+ * encoder.h — Single-pin speed encoder driver
+ * STM32F746G-DISCO (Arduino header only)
  *
- * ── Pin assignment ────────────────────────────────────────────────────
+ * Uses GPIO interrupt (EXTI) on CH_A signal only.
+ * Speed calculated from pulse count per time interval.
+ * Direction known from BTS7960 command, not encoder.
  *
- *  Motor        │ Timer │ CH_A (board label)    │ CH_B (board label)
- *  ──────────── │ ───── │ ───────────────────── │ ──────────────────────
- *  Front-Left   │ TIM5  │ A0   (PA0)            │ A1   (PA1)
- *  Front-Right  │ TIM2  │ D9   (PA15)           │ Morpho CN2 pin15 (PB3)
- *  Rear-Left    │ TIM4  │ Morpho CN2 pin13 (PB6)│ Morpho CN2 pin11 (PB7)
- *  Rear-Right   │ TIM3  │ D3   (PB4)            │ Morpho CN1 pin64 (PB5)
+ * ── Pin Assignment (all Arduino header) ─────────────────────────────
+ *   FL encoder CH_A → A0  (PA0)  EXTI0
+ *   FR encoder CH_A → D3  (PB4)  EXTI4
+ *   RL encoder CH_A → D9  (PA15) EXTI15
+ *   RR encoder CH_A → D10 (PA8)  EXTI8 — wait PA8=TIM1_CH1
  *
- * ── CubeMX settings for all four timers ─────────────────────────────
- *   Combined Channels : Encoder Mode TI1 and TI2
- *   Counter Period    : 65535
- *   Prescaler         : 0
- *   CH1/CH2 Polarity  : Rising Edge
- *   Input Filter      : 4  (noise rejection)
+ * Actually safe assignment:
+ *   FL → A0  (PA0)  EXTI0
+ *   FR → D3  (PB4)  EXTI4
+ *   RL → D9  (PA15) EXTI15
+ *   RR → D2  (PG6)  EXTI6
  *
  * ── RMCS-3070 specs ─────────────────────────────────────────────────
- *   100 RPM output shaft @ 12 V
- *   Encoder: Hall effect, 11 PPR (before gearbox)
- *   Gear ratio: ~51.45  →  ticks/rev = 11 × 51.45 × 4 = 2264
+ *   Encoder: Hall effect, 11 PPR (motor shaft)
+ *   Gear ratio: ~51.45
+ *   Ticks per wheel rev = 11 × 51.45 = 566 (single channel)
+ *   Wheel diameter: 8.5 mm → circumference = 26.70 mm
+ *   mm per tick = 26.70 / 566 = 0.04717 mm
+ *
+ * ── CubeMX settings per pin ─────────────────────────────────────────
+ *   Mode     : GPIO_EXTI (External Interrupt)
+ *   Trigger  : Rising Edge
+ *   Pull     : Pull-Down
+ *   Enable NVIC for each EXTI line
  */
+
 #ifndef ENCODER_H
 #define ENCODER_H
 
 #include "stm32f7xx_hal.h"
 #include <stdint.h>
 
-/* ── Encoder indices ──────────────────────────────────────────────── */
-#define ENC_FL     0   /* TIM5 : A0 (PA0=CH1)  + A1 (PA1=CH2)           */
-#define ENC_FR     1   /* TIM2 : D9 (PA15=CH1) + CN2p15 (PB3=CH2)       */
-#define ENC_RL     2   /* TIM4 : CN2p13 (PB6=CH1) + CN2p11 (PB7=CH2)   */
-#define ENC_RR     3   /* TIM3 : D3 (PB4=CH1)  + Morpho CN1 pin64 (PB5=CH2) */
-#define ENC_NUM    4
+/* ── Encoder indices ─────────────────────────────────────────────── */
+#define ENC_FL    0   /* A0  (PA0)  EXTI0  */
+#define ENC_FR    1   /* D3  (PB4)  EXTI4  */
+#define ENC_RL    2   /* D9  (PA15) EXTI15 */
+#define ENC_RR    3   /* D2  (PG6)  EXTI6  */
+#define ENC_NUM   4
 
-/* Backward-compatibility aliases (used by lcd_display.c) */
+/* Aliases for left/right side */
 #define ENC_LEFT   ENC_FL
 #define ENC_RIGHT  ENC_FR
 
-/* ── Physical constants ─────────────────────────────────────────────── */
-#define ENC_WHEEL_DIAM_MM    8.5f
-#define ENC_WHEEL_CIRC_MM    26.70f
-#define ENC_PPR_MOTOR        11
-#define ENC_GEAR_RATIO       51.45f
-#define ENC_TICKS_PER_REV    2264u      /* 11 × 51.45 × 4 (quadrature) */
-#define ENC_MM_PER_TICK      (ENC_WHEEL_CIRC_MM / (float)ENC_TICKS_PER_REV)
+/* ── Physical constants ─────────────────────────────────────────── */
+#define ENC_PPR_MOTOR       11        /* pulses per motor revolution  */
+#define ENC_GEAR_RATIO      51.45f    /* gearbox ratio                */
+#define ENC_TICKS_PER_REV   566u      /* 11 × 51.45 (single channel)  */
+#define ENC_WHEEL_CIRC_MM   26.70f    /* π × 8.5 mm wheel diameter    */
+#define ENC_MM_PER_TICK     (ENC_WHEEL_CIRC_MM / (float)ENC_TICKS_PER_REV)
+#define ENC_WHEELBASE_MM    200.0f    /* left-to-right wheel centres  */
 
-/* Wheelbase (left-to-right wheel centre distance) — measure your robot */
-#define ENC_WHEELBASE_MM     200.0f
-
-/* ── Per-encoder state ──────────────────────────────────────────────── */
+/* ── Per-encoder state ───────────────────────────────────────────── */
 typedef struct {
-    TIM_HandleTypeDef *htim;
-    int32_t  ticks;      /* accumulated signed ticks   */
-    uint16_t last_cnt;   /* previous TIM->CNT          */
-    float    vel_mmps;   /* velocity  mm/s             */
-    float    dist_mm;    /* total distance  mm         */
-    uint32_t last_ms;
+    volatile uint32_t pulse_count;   /* pulses since last update     */
+    volatile uint32_t total_ticks;   /* total pulses ever            */
+    float    vel_mmps;               /* calculated speed mm/s        */
+    float    dist_mm;                /* total distance mm            */
+    uint32_t last_ms;                /* timestamp of last update     */
+    int8_t   direction;             /* +1 forward, -1 reverse       */
 } Encoder_t;
 
 extern Encoder_t g_enc[ENC_NUM];
 
-/* ── API ────────────────────────────────────────────────────────────── */
+/* ── API ─────────────────────────────────────────────────────────── */
 
 /**
- * Call after MX_TIM5/TIM2/TIM4/TIM3_Init() in main.c.
- *   htim_fl → TIM5  (Front-Left,  A0+A1)
- *   htim_fr → TIM2  (Front-Right, D9+CN2p15)
- *   htim_rl → TIM4  (Rear-Left,   CN2p13+CN2p11)
- *   htim_rr → TIM3  (Rear-Right,  D3+CN2)
+ * @brief Init encoder state. Call before main loop.
+ *        CubeMX must configure EXTI pins before this.
  */
-void    Encoder_Init   (TIM_HandleTypeDef *htim_fl,
-                        TIM_HandleTypeDef *htim_fr,
-                        TIM_HandleTypeDef *htim_rl,
-                        TIM_HandleTypeDef *htim_rr);
-void    Encoder_Update (void);           /* call every 10 ms */
-void    Encoder_Reset  (uint8_t idx);
-float   Encoder_VelMmps(uint8_t idx);
-float   Encoder_DistMm (uint8_t idx);
-int32_t Encoder_Ticks  (uint8_t idx);
+void Encoder_Init(void);
+
+/**
+ * @brief Update velocities. Call every 100ms from main loop.
+ */
+void Encoder_Update(void);
+
+/**
+ * @brief Call from EXTI ISR for each encoder pin.
+ * @param enc_id  ENC_FL, ENC_FR, ENC_RL, or ENC_RR
+ */
+void Encoder_PulseISR(uint8_t enc_id);
+
+/**
+ * @brief Set direction for an encoder (from motor command).
+ * @param enc_id    Encoder index
+ * @param forward   1=forward, 0=reverse
+ */
+void Encoder_SetDirection(uint8_t enc_id, uint8_t forward);
+
+/* Getters */
+float    Encoder_VelMmps (uint8_t idx);
+float    Encoder_DistMm  (uint8_t idx);
+uint32_t Encoder_Ticks   (uint8_t idx);
+void     Encoder_Reset   (uint8_t idx);
 
 #endif /* ENCODER_H */

@@ -1,41 +1,56 @@
 /**
- * app.c  —  STM32F746G-DISCO  Main Application
+ * app.c — STM32F746G-DISCO Terrain Bot Main Application
  *
- * ── Hardware ─────────────────────────────────────────────────────────
- *   ICM-20948 IMU      : I2C1  SCL=PB8  SDA=PB9          @ 102 Hz
- *   BTS7960 #1 (LEFT)  : TIM12 CH1(PH6/D6)=RPWM  CH2(PB15/D11)=LPWM
- *                        Controls FL + RL motors in parallel
- *   BTS7960 #2 (RIGHT) : TIM1  CH1(PA8/D10)=RPWM
- *                        TIM13 CH1(PA6/Morpho)=LPWM
- *                        Controls FR + RR motors in parallel
- *   Encoder FL         : TIM5  PA0(CH1) + PA1(CH2)
- *   Encoder FR         : TIM2  PA15(CH1) + PB3(CH2)
- *   Encoder RL         : TIM4  PB6(CH1) + PB7(CH2)
- *   Encoder RR         : TIM3  PB4(CH1) + PB5(CH2)
- *   micro-ROS (RPi)    : USART6 PG14(TX) PG9(RX) @ 2 Mbaud
- *   LCD display        : LTDC built-in 480×272
+ * ── Hardware (Arduino header only) ──────────────────────────────────
  *
- * ── Drive mode ───────────────────────────────────────────────────────
+ *   LEFT  BTS7960 (#1 → FL+RL motors):
+ *     RPWM ← A4 (PF7  TIM11_CH1)   forward PWM
+ *     LPWM ← A5 (PF6  TIM10_CH1)   reverse PWM
+ *     R_EN, L_EN → 3.3V (always enabled)
+ *
+ *   RIGHT BTS7960 (#2 → FR+RR motors):
+ *     RPWM ← A2 (PF9  TIM14_CH1)   forward PWM
+ *     LPWM ← A3 (PF8  TIM13_CH1)   reverse PWM
+ *     R_EN, L_EN → 3.3V (always enabled)
+ *
+ *   ENCODERS (1 pin per motor, interrupt on CH_A rising edge):
+ *     FL → A0  (PA0)  EXTI0
+ *     FR → D3  (PB4)  EXTI4
+ *     RL → D9  (PA15) EXTI15
+ *     RR → D2  (PG6)  EXTI6
+ *
+ *   IMU ICM-20948:
+ *     SCL → D15 (PB8)  I2C1_SCL
+ *     SDA → D14 (PB9)  I2C1_SDA
+ *     Connect via CN2 connector (8-pin I2C extension)
+ *
+ *   UART to Raspberry Pi:
+ *     TX  → D1  (PC6)  USART6_TX → white wire on TTL cable
+ *     RX  → D0  (PC7)  USART6_RX → green wire on TTL cable
+ *     GND → GND        → black wire on TTL cable
+ *     Baud: 2,000,000
+ *
+ * ── CubeMX peripherals needed ────────────────────────────────────────
+ *   I2C1    : PB8(SCL) PB9(SDA)  400kHz Fast Mode
+ *   USART6  : PC6(TX)  PC7(RX)   2000000 baud 8N1
+ *   TIM10   : PWM CH1  PF6(A5)   PSC=0 ARR=10799 (20kHz)
+ *   TIM11   : PWM CH1  PF7(A4)   PSC=0 ARR=10799
+ *   TIM13   : PWM CH1  PF8(A3)   PSC=0 ARR=10799
+ *   TIM14   : PWM CH1  PF9(A2)   PSC=0 ARR=10799
+ *   PA0     : GPIO_EXTI0   (FL encoder)  Rising edge, Pull-Down
+ *   PB4     : GPIO_EXTI4   (FR encoder)  Rising edge, Pull-Down
+ *   PA15    : GPIO_EXTI15  (RL encoder)  Rising edge, Pull-Down
+ *   PG6     : GPIO_EXTI6   (RR encoder)  Rising edge, Pull-Down
+ *   Enable NVIC for EXTI0, EXTI4, EXTI9_5, EXTI15_10
+ *
+ * ── Drive topology ───────────────────────────────────────────────────
  *   Skid-steer (tank drive):
- *     Left  side (FL+RL) ← same velocity target
- *     Right side (FR+RR) ← same velocity target
- *   2WD now:  1 motor per BTS (FL on BTS#1, FR on BTS#2)
- *   4WD later: add RL to BTS#1 output, RR to BTS#2 output — no code change
- *
- * ── Velocity feedback ────────────────────────────────────────────────
- *   Left  side velocity  = average of FL + RL encoder readings
- *   Right side velocity  = average of FR + RR encoder readings
- *   (In 2WD: only FL/FR encoders active — RL/RR read 0, average still works)
+ *   v_left  = linear.x(mm/s) - angular.z(rad/s) × wheelbase/2
+ *   v_right = linear.x(mm/s) + angular.z(rad/s) × wheelbase/2
  *
  * ── Safety layer (paper §III) ────────────────────────────────────────
- *   IMU inclination + shake → risk R → speed_scale = (1−R)²
+ *   Risk R from IMU pitch/roll/shake → speed_scale = (1-R)²
  *   Hard E-stop: pitch>30° or roll>40°
- *
- * ── micro-ROS topics ─────────────────────────────────────────────────
- *   Pub: /imu/data          sensor_msgs/Imu           @ 100 Hz
- *   Pub: /wheel_ticks       std_msgs/Int32MultiArray  @  50 Hz
- *   Pub: /wheel_velocity    std_msgs/Float32MultiArray@  50 Hz
- *   Sub: /cmd_vel           geometry_msgs/Twist
  */
 
 #include "app.h"
@@ -63,51 +78,49 @@
 #include <string.h>
 
 /* ── HAL handles (declared by CubeMX in main.c) ─────────────────── */
-extern I2C_HandleTypeDef  hi2c1;    /* ICM-20948 : SCL=PB8 SDA=PB9       */
-extern TIM_HandleTypeDef  htim5;    /* Encoder FL: PA0(CH1) + PA1(CH2)   */
-extern TIM_HandleTypeDef  htim2;    /* Encoder FR: PA15(CH1) + PB3(CH2)  */
-extern TIM_HandleTypeDef  htim4;    /* Encoder RL: PB6(CH1) + PB7(CH2)   */
-extern TIM_HandleTypeDef  htim3;    /* Encoder RR: PB4(CH1) + PB5(CH2)   */
-extern TIM_HandleTypeDef  htim12;   /* LEFT  BTS7960: RPWM=CH1 LPWM=CH2  */
-extern TIM_HandleTypeDef  htim1;    /* RIGHT BTS7960: RPWM=CH1            */
-extern TIM_HandleTypeDef  htim13;   /* RIGHT BTS7960: LPWM=CH1            */
-extern UART_HandleTypeDef huart6;   /* micro-ROS: TX=PG14  RX=PG9  2 Mbaud */
+extern I2C_HandleTypeDef  hi2c1;    /* ICM-20948: SCL=PB8 SDA=PB9   */
+extern TIM_HandleTypeDef  htim10;   /* LEFT  LPWM: A5 (PF6)         */
+extern TIM_HandleTypeDef  htim11;   /* LEFT  RPWM: A4 (PF7)         */
+extern TIM_HandleTypeDef  htim13;   /* RIGHT LPWM: A3 (PF8)         */
+extern TIM_HandleTypeDef  htim14;   /* RIGHT RPWM: A2 (PF9)         */
+extern UART_HandleTypeDef huart6;   /* RPi UART: TX=PC6 RX=PC7      */
 
-/* ── Loop timing ─────────────────────────────────────────────────── */
-#define IMU_PERIOD_MS        10    /* 100 Hz — IMU read + Madgwick + safety */
-#define ENC_PERIOD_MS        10    /* 100 Hz — encoder read + motor PID     */
-#define IMU_PUB_PERIOD_MS    10    /* 100 Hz — publish /imu/data            */
-#define ENC_PUB_PERIOD_MS    20    /*  50 Hz — publish /wheel_ticks + vel   */
-#define LCD_PUB_PERIOD_MS   100    /*  10 Hz — LCD refresh                  */
-#define CALIB_SAMPLES       200    /*   ~2 s  — gyro bias calibration       */
-#define MADGWICK_BETA       0.033f
+/* ── Timing ──────────────────────────────────────────────────────── */
+#define IMU_PERIOD_MS       10    /* 100 Hz IMU + Madgwick + safety  */
+#define ENC_PERIOD_MS      100    /*  10 Hz encoder speed update     */
+#define PID_PERIOD_MS       10    /* 100 Hz motor PID                */
+#define IMU_PUB_PERIOD_MS   10    /* 100 Hz /imu/data publish        */
+#define ENC_PUB_PERIOD_MS   20    /*  50 Hz /wheel_velocity publish  */
+#define LCD_PERIOD_MS      100    /*  10 Hz LCD refresh              */
+#define CALIB_SAMPLES      200    /*   ~2 s gyro bias calibration    */
+#define MADGWICK_BETA      0.033f
 
 /* ── Safety thresholds (paper §III) ─────────────────────────────── */
-#define SAFETY_W_PITCH       0.7f
-#define SAFETY_W_ROLL        0.3f
-#define SAFETY_THETA_SAFE    10.0f
-#define SAFETY_THETA_CRIT    30.0f
-#define SAFETY_W_INCL        0.7f
-#define SAFETY_W_SHAKE       0.3f
-#define SAFETY_LPF_BETA      0.90f
-#define SAFETY_ESTOP_PITCH   30.0f
-#define SAFETY_ESTOP_ROLL    40.0f
-#define SAFETY_FLIP_RATE     (30.0f * 0.017453293f)
-#define SAFETY_FLIP_PITCH    (15.0f * 0.017453293f)
+#define SAFETY_W_PITCH      0.7f
+#define SAFETY_W_ROLL       0.3f
+#define SAFETY_THETA_SAFE   10.0f
+#define SAFETY_THETA_CRIT   30.0f
+#define SAFETY_W_INCL       0.7f
+#define SAFETY_W_SHAKE      0.3f
+#define SAFETY_LPF_BETA     0.90f
+#define SAFETY_ESTOP_PITCH  30.0f
+#define SAFETY_ESTOP_ROLL   40.0f
+#define SAFETY_FLIP_RATE    (30.0f * 0.017453293f)
+#define SAFETY_FLIP_PITCH   (15.0f * 0.017453293f)
 
 /* ── cmd_vel watchdog ────────────────────────────────────────────── */
-#define CMD_VEL_TIMEOUT_MS   500
+#define CMD_VEL_TIMEOUT_MS  500
 
 /* ── Motor PI gains ──────────────────────────────────────────────── */
-#define MOTOR_KP     0.5f
-#define MOTOR_KI     0.1f
+#define MOTOR_KP   0.5f
+#define MOTOR_KI   0.1f
 
-/* ── IMU noise covariance (ICM-20948 datasheet) ─────────────────── */
-#define GY_COV   (0.00262f * 0.00262f)
-#define AC_COV   (0.02256f * 0.02256f)
-#define OR_COV    0.0001f
+/* ── IMU noise covariance ────────────────────────────────────────── */
+#define GY_COV  (0.00262f * 0.00262f)
+#define AC_COV  (0.02256f * 0.02256f)
+#define OR_COV   0.0001f
 
-#define UROS_OK(fn)  do { if ((fn) != RCL_RET_OK) Error_Handler(); } while(0)
+#define UROS_OK(fn) do { if((fn) != RCL_RET_OK) Error_Handler(); } while(0)
 
 /* ── micro-ROS objects ───────────────────────────────────────────── */
 static rcl_allocator_t  alloc;
@@ -139,12 +152,11 @@ static float g_risk_filtered = 0.0f;
 static float g_safety_scale  = 1.0f;
 
 /* ── Motor / cmd_vel state ───────────────────────────────────────── */
-/* Per-side: [0]=LEFT [1]=RIGHT */
 static float    g_target_mmps[SIDE_NUM] = {0};
 static float    g_pid_integral[SIDE_NUM] = {0};
 static uint32_t g_cmd_last_ms = 0;
 
-/* ── Helper: average encoder velocity for one side ──────────────── */
+/* ── Side velocity feedback (average of 2 encoders per side) ─────── */
 static float side_vel_mmps(Motor_Side side)
 {
     if (side == SIDE_LEFT)
@@ -154,7 +166,7 @@ static float side_vel_mmps(Motor_Side side)
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- *  cmd_vel callback — differential drive kinematics → per-side targets
+ *  cmd_vel callback
  * ═══════════════════════════════════════════════════════════════════ */
 static void cmd_vel_callback(const void *msg_in)
 {
@@ -180,7 +192,7 @@ static void update_safety(void)
     float pitch_abs = fabsf(pitch_deg);
     float roll_abs  = fabsf(roll_deg);
 
-    /* Hard E-stop check first (minimum latency) */
+    /* Hard E-stop first */
     float pitch_rate = fabsf(imu.gy - calib.gy_bias);
     if (pitch_abs >= SAFETY_ESTOP_PITCH ||
         roll_abs  >= SAFETY_ESTOP_ROLL  ||
@@ -207,21 +219,21 @@ static void update_safety(void)
     float r_shake = fabsf(a_mag - g_ref) / g_ref;
     if (r_shake > 1.0f) r_shake = 1.0f;
 
-    /* Eq.8: combined risk */
+    /* Eq.8: combined */
     float r_raw = SAFETY_W_INCL * r_incl + SAFETY_W_SHAKE * r_shake;
     if (r_raw > 1.0f) r_raw = 1.0f;
 
-    /* Eq.10: low-pass filter */
+    /* Eq.10: LPF */
     g_risk_filtered = SAFETY_LPF_BETA * g_risk_filtered +
                       (1.0f - SAFETY_LPF_BETA) * r_raw;
 
-    /* Eq.11: nonlinear scale */
+    /* Eq.11: scale */
     float s = 1.0f - g_risk_filtered;
     g_safety_scale = s * s;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- *  Motor PI — runs per side at 100 Hz
+ *  Motor PI — 100 Hz
  * ═══════════════════════════════════════════════════════════════════ */
 static void motor_pid_update(float dt_s)
 {
@@ -279,7 +291,7 @@ static void uros_setup(void)
         &executor, &sub_cmd_vel, &msg_cmd_vel,
         cmd_vel_callback, ON_NEW_DATA));
 
-    /* Message buffer wiring */
+    /* Message buffers */
     msg_ticks.data.data     = tick_buf;
     msg_ticks.data.size     = ENC_NUM;
     msg_ticks.data.capacity = ENC_NUM;
@@ -326,7 +338,7 @@ static void publish_imu(void)
 static void publish_encoders(void)
 {
     for (int i = 0; i < ENC_NUM; i++) {
-        tick_buf[i] = Encoder_Ticks((uint8_t)i);
+        tick_buf[i] = (int32_t)Encoder_Ticks((uint8_t)i);
         vel_buf[i]  = Encoder_VelMmps((uint8_t)i);
     }
     rcl_publish(&pub_ticks, &msg_ticks, NULL);
@@ -345,19 +357,19 @@ void App_Run(void)
     if (ICM20948_Init(&hi2c1) != HAL_OK)
         Error_Handler();
 
-    /* 3. All 4 encoders */
-    Encoder_Init(&htim5, &htim2, &htim4, &htim3);
+    /* 3. Encoders (interrupt-based) */
+    Encoder_Init();
 
     /* 4. BTS7960 motor drivers */
-    Motor_Init(&htim12, &htim1, &htim13);
+    Motor_Init(&htim10, &htim11, &htim13, &htim14);
 
-    /* 5. Madgwick AHRS filter */
+    /* 5. Madgwick AHRS */
     Madgwick_Init(&ahrs, MADGWICK_BETA);
 
-    /* 6. micro-ROS — blocks until Raspberry Pi agent responds */
+    /* 6. micro-ROS — blocks until RPi agent responds */
     uros_setup();
 
-    /* 7. Gyro bias calibration (~2 s) — keep robot still */
+    /* 7. Gyro calibration (~2s) — keep robot still! */
     memset(&calib, 0, sizeof(calib));
     while (!calib.done) {
         LCD_Display_Update(&ahrs, 0);
@@ -386,6 +398,7 @@ void App_Run(void)
     /* 10. Main loop */
     uint32_t t_imu     = HAL_GetTick();
     uint32_t t_enc     = HAL_GetTick();
+    uint32_t t_pid     = HAL_GetTick();
     uint32_t t_pub_imu = HAL_GetTick();
     uint32_t t_pub_enc = HAL_GetTick();
     uint32_t t_lcd     = HAL_GetTick();
@@ -397,12 +410,10 @@ void App_Run(void)
         if (now - t_imu >= IMU_PERIOD_MS) {
             float dt = (float)(now - t_imu) * 0.001f;
             t_imu = now;
-
             if (ICM20948_Read(&hi2c1, &imu) == HAL_OK) {
                 float gx = imu.gx - calib.gx_bias;
                 float gy = imu.gy - calib.gy_bias;
                 float gz = imu.gz - calib.gz_bias;
-
                 if (imu.mx != 0.0f || imu.my != 0.0f || imu.mz != 0.0f)
                     Madgwick_UpdateMARG(&ahrs, gx, gy, gz,
                                         imu.ax, imu.ay, imu.az,
@@ -414,13 +425,19 @@ void App_Run(void)
             }
         }
 
-        /* Encoders + motor PI @ 100 Hz */
+        /* Encoder speed update @ 10 Hz */
         if (now - t_enc >= ENC_PERIOD_MS) {
-            float dt = (float)(now - t_enc) * 0.001f;
             t_enc = now;
             Encoder_Update();
+        }
+
+        /* Motor PID @ 100 Hz */
+        if (now - t_pid >= PID_PERIOD_MS) {
+            float dt = (float)(now - t_pid) * 0.001f;
+            t_pid = now;
 
             if (now - g_cmd_last_ms > CMD_VEL_TIMEOUT_MS) {
+                /* Watchdog: stop if no cmd_vel */
                 memset(g_target_mmps,  0, sizeof(g_target_mmps));
                 memset(g_pid_integral, 0, sizeof(g_pid_integral));
                 Motor_StopAll();
@@ -442,12 +459,27 @@ void App_Run(void)
         }
 
         /* LCD @ 10 Hz */
-        if (now - t_lcd >= LCD_PUB_PERIOD_MS) {
+        if (now - t_lcd >= LCD_PERIOD_MS) {
             t_lcd = now;
             LCD_Display_Update(&ahrs, 1);
         }
 
-        /* Process incoming /cmd_vel */
+        /* Process /cmd_vel */
         rclc_executor_spin_some(&executor, RCL_MS_TO_NS(0));
+    }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ *  EXTI GPIO Callback — called by HAL from EXTI ISR
+ *  Add this to stm32f7xx_it.c or keep here if using weak override
+ * ═══════════════════════════════════════════════════════════════════ */
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+    switch (GPIO_Pin) {
+        case GPIO_PIN_0:   Encoder_PulseISR(ENC_FL); break;  /* A0  PA0  */
+        case GPIO_PIN_4:   Encoder_PulseISR(ENC_FR); break;  /* D3  PB4  */
+        case GPIO_PIN_15:  Encoder_PulseISR(ENC_RL); break;  /* D9  PA15 */
+        case GPIO_PIN_6:   Encoder_PulseISR(ENC_RR); break;  /* D2  PG6  */
+        default: break;
     }
 }
