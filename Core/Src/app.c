@@ -372,7 +372,7 @@ void App_Run(void)
     /* 7. Gyro calibration (~2s) — keep robot still! */
     memset(&calib, 0, sizeof(calib));
     while (!calib.done) {
-        LCD_Display_Update(&ahrs, 0);
+        LCD_Display_Update(&ahrs, 0, 0.0f);
         if (ICM20948_Read(&hi2c1, &imu) == HAL_OK)
             ICM20948_Calibrate(&imu, &calib, CALIB_SAMPLES);
         HAL_Delay(IMU_PERIOD_MS);
@@ -461,7 +461,7 @@ void App_Run(void)
         /* LCD @ 10 Hz */
         if (now - t_lcd >= LCD_PERIOD_MS) {
             t_lcd = now;
-            LCD_Display_Update(&ahrs, 1);
+            LCD_Display_Update(&ahrs, 1, g_risk_filtered);
         }
 
         /* Process /cmd_vel */

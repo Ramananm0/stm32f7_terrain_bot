@@ -1,10 +1,28 @@
 /**
- * lcd_display.h — STM32F746G-DISCO LCD Dashboard
+ * lcd_display.h — STM32F746G-DISCO Full Graphical Dashboard
  *
- * Displays live IMU (roll/pitch/yaw) and wheel velocity data
- * on the built-in 4.3" LCD (480x272, LTDC via BSP).
+ * Screen layout (480 × 272 px):
+ * ┌──────────────────────────────────────────────────────────────┐
+ * │  STM32 TERRAIN BOT    RISK:[=====    ]         [ STATUS ]   │
+ * ├───────────────────────┬──────────────────────────────────────┤
+ * │  IMU ORIENTATION      │  WHEEL SPEEDS                        │
+ * │  Roll : +000.0°       │  FL [==========>   ] +00.0          │
+ * │  ░░░░░bar░░░░░        │  FR [==========>   ] +00.0          │
+ * │  Pitch: +000.0°       │  RL [==========>   ] +00.0          │
+ * │  ░░░░░bar░░░░░        │  RR [==========>   ] +00.0          │
+ * │  Yaw  : +000.0°       │                                      │
+ * │  ░░░░░bar░░░░░        │                                      │
+ * ├───────────────────────┴──────────────────────────────────────┤
+ * │  PITCH SAFETY    [=============>                          ]  │
+ * └──────────────────────────────────────────────────────────────┘
  *
- * Requires: stm32746g_discovery_lcd BSP in your CubeMX project.
+ * Colour coding:
+ *   Green  = safe / forward
+ *   Amber  = caution (>15° or >30% risk)
+ *   Red    = danger  (>25° or >70% risk) / reverse
+ *   Blue   = pitch bar
+ *   Orange = roll bar
+ *   Purple = yaw bar
  */
 
 #ifndef LCD_DISPLAY_H
@@ -15,18 +33,21 @@
 #include "encoder.h"
 
 /**
- * LCD_Display_Init — initialise LCD and draw static UI frame.
- * Call once before App_Run() enters its main loop.
+ * @brief Initialise LCD and draw static UI frame.
+ *        Call once before main loop starts.
  */
 void LCD_Display_Init(void);
 
 /**
- * LCD_Display_Update — refresh all live values on screen.
- * Call at ~10 Hz from the main loop (no need to go faster, LCD is 60 Hz).
+ * @brief Refresh all live data on screen.
+ *        Call at ~10 Hz from main loop.
  *
- * @param ahrs   Pointer to Madgwick filter (quaternion → Euler conversion done here)
- * @param calib_done  Pass true after gyro calibration finishes
+ * @param ahrs         Madgwick filter state (quaternion → Euler)
+ * @param calib_done   0=calibrating, 1=running
+ * @param risk_scaled  Safety risk 0.0 (safe) to 1.0 (E-stop)
  */
-void LCD_Display_Update(const Madgwick_t *ahrs, uint8_t calib_done);
+void LCD_Display_Update(const Madgwick_t *ahrs,
+                        uint8_t calib_done,
+                        float risk_scaled);
 
 #endif /* LCD_DISPLAY_H */
