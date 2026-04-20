@@ -19,6 +19,7 @@
 
 #include "lcd_display.h"
 #include "encoder.h"
+#include "motor.h"
 #include <math.h>
 #include <stdio.h>
 

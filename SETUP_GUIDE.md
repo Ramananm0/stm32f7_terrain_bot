@@ -2,172 +2,256 @@
 
 ---
 
-## 1. Hardware You Need
+## 1. Hardware Required
 
 | Component | Qty | Notes |
 |-----------|-----|-------|
 | STM32F746G-DISCO | 1 | Main controller |
-| Raspberry Pi 4B | 1 | Runs ROS2 Humble + Nav2 |
-| ICM-20948 IMU module | 1 | 9-DOF, I2C |
-| PCA9685 PWM module | 1 | I2C motor PWM expander |
-| RMCS-3070 motors | 4 | 100 RPM, 12V with encoders |
-| H-bridge driver | 4 | L298N or TB6612FNG, one per motor |
-| USB-to-TTL cable | 1 | CP2102 or CH340, 3.3V logic |
+| Raspberry Pi 4B | 1 | ROS2 Humble + Nav2 |
+| ICM-20948 IMU | 1 | 9-DOF, I2C |
+| BTS7960 motor driver | 2 | Left side + Right side |
+| RMCS-3070 motors | 4 | 100 RPM, 12V, built-in encoders |
+| USB-TTL cable | 1 | CP2102/CH340, 6-pin |
 | 12V power supply | 1 | For motors |
 | 5V power supply | 1 | For STM32 + RPi |
-| Jumper wires | — | Male-to-female |
+| Jumper wires (female-female) | — | Dupont wires |
 
 ---
 
-## 2. Complete Wiring Diagram
+## 2. Pin Connections (Arduino Header Only)
 
-### ICM-20948 IMU → STM32
+### BTS7960 #1 — LEFT side (FL + RL motors)
 ```
-ICM-20948        STM32 label     STM32 pin
-─────────        ───────────     ─────────
-VDD (3.3V)  →   3V3             —
-GND         →   GND             —
-SCL         →   SCL (Arduino)   PB8
-SDA         →   SDA (Arduino)   PB9
-AD0         →   GND             — (sets I2C addr = 0x68)
-INT         →   D2  (optional)  PG6
+BTS7960    Board Label    STM32 Pin
+RPWM    →  A4             PF7   (TIM11_CH1 forward PWM)
+LPWM    →  A5             PF6   (TIM10_CH1 reverse PWM)
+R_EN    →  3.3V           tie HIGH always
+L_EN    →  3.3V           tie HIGH always
+VCC     →  5V
+GND     →  GND
+RIS     →  not connected
+LIS     →  not connected
+B+/B-   →  FL motor + RL motor (parallel)
 ```
 
-### PCA9685 → STM32  (shares I2C1 with ICM-20948)
+### BTS7960 #2 — RIGHT side (FR + RR motors)
 ```
-PCA9685     STM32 label     STM32 pin
-───────     ───────────     ─────────
-VCC    →    3V3             —
-GND    →    GND             —
-SCL    →    SCL (Arduino)   PB8
-SDA    →    SDA (Arduino)   PB9
-OE     →    GND             — (always enabled)
-A0-A5  →    GND             — (I2C addr = 0x40)
+BTS7960    Board Label    STM32 Pin
+RPWM    →  A2             PF9   (TIM14_CH1 forward PWM)
+LPWM    →  A3             PF8   (TIM13_CH1 reverse PWM)
+R_EN    →  3.3V           tie HIGH always
+L_EN    →  3.3V           tie HIGH always
+VCC     →  5V
+GND     →  GND
+RIS     →  not connected
+LIS     →  not connected
+B+/B-   →  FR motor + RR motor (parallel)
 ```
-> Both ICM-20948 and PCA9685 share the same SCL/SDA lines. This is fine
-> because they have different I2C addresses (0x68 vs 0x40).
 
-### PCA9685 → H-bridges → Motors
+### Encoders (1 pin per motor — CH_A only)
 ```
-PCA9685 CH   →   H-bridge pin   Motor
-────────────     ─────────────  ─────
-CH0 (PWM)   →   ENA            Front-Left  (FL)
-CH4 (DIR)   →   IN1            Front-Left  (FL)
-GND         →   IN2            Front-Left  (keep LOW)
+Motor    Board Label    STM32 Pin    Encoder Wire
+FL    →  A0             PA0          Green (CH_A)
+FR    →  D3             PB4          Green (CH_A)
+RL    →  D9             PA15         Green (CH_A)
+RR    →  D2             PG6          Green (CH_A)
 
-CH1 (PWM)   →   ENA            Front-Right (FR)
-CH5 (DIR)   →   IN1            Front-Right (FR)
-GND         →   IN2            Front-Right
-
-CH2 (PWM)   →   ENA            Rear-Left   (RL)
-CH6 (DIR)   →   IN1            Rear-Left   (RL)
-GND         →   IN2            Rear-Left
-
-CH3 (PWM)   →   ENA            Rear-Right  (RR)
-CH7 (DIR)   →   IN1            Rear-Right  (RR)
-GND         →   IN2            Rear-Right
-```
-> H-bridge motor supply (VM/VMOT) → 12V
-> H-bridge logic supply (VCC/VDD) → 5V
-
-### Encoders → STM32 Timers
-```
-Motor         Timer  CH_A pin          CH_B pin
-───────────── ─────  ────────────────  ──────────────────────
-Front-Left    TIM5   A0 (PA0)          A1 (PA1)
-Front-Right   TIM2   D9 (PA15)         Morpho CN2 pin15 (PB3)
-Rear-Left     TIM4   Morpho CN2 pin13  Morpho CN2 pin11
-                     (PB6)             (PB7)
-Rear-Right    TIM3   D3 (PB4)          Morpho CN1 pin64 (PB5)
-```
-RMCS-3070 encoder cable colours:
-```
+All encoders:
 Red   → 5V
 Black → GND
-Green → CH_A (timer CH1)
-White → CH_B (timer CH2)
+White → not connected (CH_B — future use)
 ```
 
-### micro-ROS UART → Raspberry Pi
+### ICM-20948 IMU → CN2 connector (8-pin I2C)
 ```
-STM32 label   STM32 pin   USB-TTL cable wire   RPi
-───────────   ─────────   ──────────────────   ───
-D1 (TX)  →   PC6         White (RXD)          USB end
-D0 (RX)  →   PC7         Green (TXD)          USB end
-GND      →   GND         Black (GND)          USB end
-(Red VCC wire → DO NOT connect)
+ICM-20948    CN2 Pin    Description
+VDD       →  Pin 5      +3V3
+GND       →  Pin 7      GND
+SDA       →  Pin 1      I2C_SDA (PB9)
+SCL       →  Pin 3      I2C_SCL (PB8)
+AD0       →  GND        (I2C address = 0x68)
+INT       →  not connected
+```
+
+### UART to Raspberry Pi (USB-TTL cable)
+```
+Cable Wire    Board Label    Direction
+White (RXD) → D1 (PC6)      STM32 TX → RPi
+Green (TXD) → D0 (PC7)      RPi TX → STM32
+Black (GND) → GND
+Red         → DO NOT CONNECT
+Yellow/Blue → DO NOT CONNECT
 ```
 
 ---
 
-## 3. STM32CubeMX Configuration
+## 3. CubeMX Configuration — Step by Step
 
-Open your .ioc file and configure the following:
-
-### System Core
+### Step 1 — System Core
 ```
 SYS → Debug: Serial Wire (SWD)
-RCC → HSE: CRYSTAL/CERAMIC RESONATOR
-Clock Configuration:
-  - Input: HSE 25 MHz (ST-LINK provides this via BYPASS mode)
-  - PLL: M=25, N=432, P=2, Q=9
-  - SYSCLK = 216 MHz
+RCC → HSE: BYPASS Clock Source (ST-LINK provides 25MHz)
+
+Clock Configuration tab:
+  Input Freq  : 25 MHz
+  PLL Source  : HSE
+  PLLM        : 25
+  PLLN        : 432
+  PLLP        : 2
+  SYSCLK      : 216 MHz ← confirm this
+  AHB         : /1  → 216 MHz
+  APB1        : /4  → 54 MHz
+  APB2        : /2  → 108 MHz
 ```
 
-### Peripherals to Enable
-
-| Peripheral | Mode | Key Settings |
-|------------|------|-------------|
-| I2C1 | I2C | Fast Mode 400 kHz, SCL=PB8, SDA=PB9 |
-| USART6 | Asynchronous | 2000000 baud, 8N1, TX=PC6, RX=PC7 |
-| TIM5 | Encoder Mode | CH1=PA0, CH2=PA1, Period=65535, Filter=4 |
-| TIM2 | Encoder Mode | CH1=PA15, CH2=PB3, Period=65535, Filter=4 |
-| TIM4 | Encoder Mode | CH1=PB6, CH2=PB7, Period=65535, Filter=4 |
-| TIM3 | Encoder Mode | CH1=PB4, CH2=PB5, Period=65535, Filter=4 |
-| LTDC | Built-in LCD | Leave as default BSP config |
-
-> **TIM1 is NOT needed** — motor PWM goes through PCA9685 over I2C.
-
-All encoder timer settings:
+### Step 2 — I2C1 (IMU)
 ```
-Combined Channels : Encoder Mode TI1 and TI2
-Counter Period    : 65535
-Prescaler         : 0
-CH1/CH2 Polarity  : Rising Edge
-Input Filter      : 4
+Connectivity → I2C1:
+  Mode           : I2C
+  Speed Mode     : Fast Mode
+  Clock Speed    : 400000 (400 kHz)
+Pins auto-assign: PB8 (SCL), PB9 (SDA) ✅
 ```
 
-### GPIO Outputs (not needed anymore!)
+### Step 3 — USART6 (Raspberry Pi)
 ```
-PG6, PG7, PI2, PI3 were previously motor direction pins.
-These are now handled by PCA9685 CH4-CH7.
-You can leave them as-is or remove them from CubeMX.
+Connectivity → USART6:
+  Mode           : Asynchronous
+  Baud Rate      : 2000000
+  Word Length    : 8 Bits
+  Stop Bits      : 1
+  Parity         : None
+  Hardware Flow  : Disable
+Pins: PC6 (TX = D1), PC7 (RX = D0) ✅
+```
+
+### Step 4 — TIM11 (LEFT RPWM → A4/PF7)
+```
+Timers → TIM11:
+  Channel 1      : PWM Generation CH1
+  PSC            : 0
+  ARR            : 10799   (216MHz/10800 = 20kHz)
+  Auto-reload    : Enable
+  Mode           : PWM mode 1
+  Polarity       : High
+Pin: PF7 (A4) ✅
+```
+
+### Step 5 — TIM10 (LEFT LPWM → A5/PF6)
+```
+Timers → TIM10:
+  Channel 1      : PWM Generation CH1
+  PSC            : 0
+  ARR            : 10799
+  Auto-reload    : Enable
+  Mode           : PWM mode 1
+  Polarity       : High
+Pin: PF6 (A5) ✅
+```
+
+### Step 6 — TIM14 (RIGHT RPWM → A2/PF9)
+```
+Timers → TIM14:
+  Channel 1      : PWM Generation CH1
+  PSC            : 0
+  ARR            : 10799
+  Auto-reload    : Enable
+  Mode           : PWM mode 1
+  Polarity       : High
+Pin: PF9 (A2) ✅
+```
+
+### Step 7 — TIM13 (RIGHT LPWM → A3/PF8)
+```
+Timers → TIM13:
+  Channel 1      : PWM Generation CH1
+  PSC            : 0
+  ARR            : 10799
+  Auto-reload    : Enable
+  Mode           : PWM mode 1
+  Polarity       : High
+Pin: PF8 (A3) ✅
+```
+
+### Step 8 — Encoder GPIO Interrupts
+
+In Pinout view, click each pin and assign:
+
+```
+PA0  (A0)  → GPIO_EXTI0   FL encoder
+PB4  (D3)  → GPIO_EXTI4   FR encoder
+PA15 (D9)  → GPIO_EXTI15  RL encoder
+PG6  (D2)  → GPIO_EXTI6   RR encoder
+```
+
+For each pin in GPIO settings:
+```
+GPIO mode  : External Interrupt - Rising edge trigger
+GPIO Pull  : Pull-down
+```
+
+In NVIC tab, enable:
+```
+☑ EXTI line0 interrupt          (PA0  FL)
+☑ EXTI line4 interrupt          (PB4  FR)
+☑ EXTI lines[9:5] interrupt     (PG6  RR)
+☑ EXTI lines[15:10] interrupt   (PA15 RL)
+```
+
+### Step 9 — Generate Code
+```
+Project → Settings:
+  Project Name   : terrain_bot
+  Toolchain/IDE  : STM32CubeIDE
+  
+Code Generator:
+  ☑ Copy only necessary library files
+  ☑ Generate peripheral initialization as .c/.h files
+
+→ GENERATE CODE → Open in STM32CubeIDE
 ```
 
 ---
 
-## 4. CubeIDE Project Setup
+## 4. CubeIDE Integration
 
-### Step-by-step:
-1. Generate code from CubeMX → Open in STM32CubeIDE
-2. Copy all files from `Core/Inc/` and `Core/Src/` into your project
-3. In `Core/Src/main.c`, add at the bottom of `main()`:
-   ```c
-   /* USER CODE BEGIN 2 */
-   App_Run();   /* never returns */
-   /* USER CODE END 2 */
-   ```
-4. Add micro-ROS static library to your project (see Step 5)
-5. Build → Run
+### Copy firmware files
+Copy all files from repo `Core/Src/` and `Core/Inc/` into your generated project.
 
-### micro-ROS library setup:
-```bash
-# On your PC, clone the micro-ROS component for STM32
-git clone https://github.com/micro-ROS/micro_ros_stm32cubemx_utils.git
+### Add to main.c
+```c
+/* USER CODE BEGIN Includes */
+#include "app.h"
+/* USER CODE END Includes */
 
-# Follow the README to generate the static library for STM32F7
-# Copy libmicroros.a and include/ into your CubeIDE project
+/* USER CODE BEGIN 2 */
+App_Run();   /* never returns */
+/* USER CODE END 2 */
 ```
+
+### Add EXTI handlers to stm32f7xx_it.c
+```c
+/* USER CODE BEGIN EXTI0_IRQn 1 */
+/* handled by HAL_GPIO_EXTI_Callback in app.c */
+/* USER CODE END EXTI0_IRQn 1 */
+```
+
+The `HAL_GPIO_EXTI_Callback` is already in `app.c`:
+```c
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+    switch (GPIO_Pin) {
+        case GPIO_PIN_0:   Encoder_PulseISR(ENC_FL); break; // A0 PA0
+        case GPIO_PIN_4:   Encoder_PulseISR(ENC_FR); break; // D3 PB4
+        case GPIO_PIN_15:  Encoder_PulseISR(ENC_RL); break; // D9 PA15
+        case GPIO_PIN_6:   Encoder_PulseISR(ENC_RR); break; // D2 PG6
+        default: break;
+    }
+}
+```
+
+### Link micro-ROS library
+Follow the micro-ROS STM32 build guide to generate and link `libmicroros.a`.
 
 ---
 
@@ -175,8 +259,8 @@ git clone https://github.com/micro-ROS/micro_ros_stm32cubemx_utils.git
 
 ### Install ROS2 Humble
 ```bash
-# On RPi (Ubuntu 22.04)
-sudo apt update && sudo apt install -y ros-humble-desktop
+sudo apt update
+sudo apt install -y ros-humble-desktop
 echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
 source ~/.bashrc
 ```
@@ -186,67 +270,56 @@ source ~/.bashrc
 sudo apt install -y ros-humble-micro-ros-agent
 ```
 
-### Find the STM32 serial device
+### Create udev rule for TTL cable
 ```bash
-# Plug in the USB-TTL cable, then:
-ls /dev/ttyUSB*    # usually /dev/ttyUSB0
-# or
-dmesg | tail -20   # look for CP210x or CH340
-```
+# Find cable
+ls /dev/ttyUSB*
 
-### Create a udev rule (so device name is always the same)
-```bash
-# Get the idVendor and idProduct
-udevadm info -a /dev/ttyUSB0 | grep idVendor
-udevadm info -a /dev/ttyUSB0 | grep idProduct
-
-# Create rule (example for CP2102):
+# Create rule (CP2102 example)
 echo 'SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", SYMLINK+="stm32"' \
   | sudo tee /etc/udev/rules.d/99-stm32.rules
 sudo udevadm control --reload-rules
-# Now device is always /dev/stm32
 ```
 
 ### Start micro-ROS agent
 ```bash
 ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/stm32 -b 2000000
-# or without udev rule:
-ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyUSB0 -b 2000000
 ```
 
 ---
 
 ## 6. First Boot Sequence
 
-1. Connect all hardware per wiring diagram
-2. Power on RPi → start micro-ROS agent (Step 5)
-3. Power on STM32 via USB
-4. LCD shows **[CALIB..]** → keep robot completely still for ~2 seconds
-5. LCD shows **[RUN]** → robot is live
+```
+1. Connect all hardware
+2. Start micro-ROS agent on RPi
+3. Power STM32 via USB
+4. LCD shows [CALIB] — keep robot STILL for ~2 seconds
+5. LCD shows [RUN]   — robot is live!
+6. LCD displays live IMU angles + wheel speeds + risk bar
+```
 
-### Verify topics are publishing:
+### Verify topics
 ```bash
 ros2 topic list
-# Expected:
 # /terrain_bot/imu/data
 # /terrain_bot/wheel_ticks
 # /terrain_bot/wheel_velocity
 
-ros2 topic hz /terrain_bot/imu/data        # ~100 Hz
-ros2 topic hz /terrain_bot/wheel_velocity  # ~50 Hz
+ros2 topic hz /terrain_bot/imu/data       # ~100 Hz
+ros2 topic hz /terrain_bot/wheel_velocity # ~50 Hz
 ```
 
 ---
 
 ## 7. Motor Testing
 
-### Manual velocity commands:
 ```bash
-# Drive forward at 30 mm/s
+# Forward
 ros2 topic pub /cmd_vel geometry_msgs/msg/Twist \
   "{linear: {x: 0.030}, angular: {z: 0.0}}" --once
 
-# Turn left in place
+# Turn left
 ros2 topic pub /cmd_vel geometry_msgs/msg/Twist \
   "{linear: {x: 0.0}, angular: {z: 0.5}}" --once
 
@@ -255,67 +328,84 @@ ros2 topic pub /cmd_vel geometry_msgs/msg/Twist \
   "{linear: {x: 0.0}, angular: {z: 0.0}}" --once
 ```
 
-### If a motor spins backwards:
-Edit `Core/Src/motor.c`, change the polarity for that motor:
+---
+
+## 8. LCD Dashboard
+
+The 4.3" built-in display shows live data at 10 Hz:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ STM32 TERRAIN BOT    RISK:[████░░░░]            [ RUN ]      │
+├───────────────────────┬──────────────────────────────────────┤
+│ IMU ORIENTATION       │ WHEEL SPEEDS (mm/s)                  │
+│ Roll : +012.3°        │ FL [████████████░] +32.1             │
+│ ░░orange░░░░░░░       │ FR [████████░░░░░] +22.5             │
+│ Pitch: -005.7°        │ RL [████████████░] +31.8             │
+│ ░░blue░░░░░░░░        │ RR [████████░░░░░] +22.1             │
+│ Yaw  : +089.1°        │                                      │
+│ ░░purple░░░░░░        │                                      │
+├───────────────────────┴──────────────────────────────────────┤
+│ PITCH SAFETY  [████░░░░░░░░░░░░░░░░░░░░]  -005.7°           │
+└──────────────────────────────────────────────────────────────┘
+```
+
+Colour coding:
+- 🟢 Green  = safe / forward motion
+- 🟡 Amber  = caution (pitch >15° or risk >30%)
+- 🔴 Red    = danger (pitch >25° or risk >70%) or reverse
+- 🔵 Blue   = pitch bar
+- 🟠 Orange = roll bar
+- 🟣 Purple = yaw bar
+
+---
+
+## 9. Safety Layer Tuning
+
+All in `Core/Src/app.c`:
 ```c
-static const int8_t MOTOR_POLARITY[MOTOR_NUM] = {
-    +1,   /* FL */
-    -1,   /* FR */   // ← change to +1 if FR spins wrong
-    +1,   /* RL */
-    -1,   /* RR */
-};
+#define SAFETY_THETA_SAFE   10.0f  // Below = full speed
+#define SAFETY_THETA_CRIT   30.0f  // Above = E-stop
+#define SAFETY_ESTOP_PITCH  30.0f  // Hard stop pitch
+#define SAFETY_ESTOP_ROLL   40.0f  // Hard stop roll
+#define SAFETY_LPF_BETA     0.90f  // Smoothing factor
 ```
 
 ---
 
-## 8. Safety Layer Tuning
+## 10. Phase 2 — When MCP23017 Arrives
 
-All thresholds are in `Core/Src/app.c`:
+Connect MCP23017 to CN2:
+```
+MCP23017    CN2 Pin
+VCC      →  Pin 5 (+3V3)
+GND      →  Pin 7 (GND)
+SDA      →  Pin 1 (PB9)
+SCL      →  Pin 3 (PB8)
+A0,A1,A2 →  GND (address 0x20)
+RESET    →  Pin 5 (+3V3)
+INTA     →  D5 (PI0) STM32 interrupt
+INTB     →  D7 (PI3) STM32 interrupt
 
-```c
-#define SAFETY_THETA_SAFE    10.0f   // Below this angle → full speed
-#define SAFETY_THETA_CRIT    30.0f   // Above this → E-stop
-#define SAFETY_ESTOP_PITCH   30.0f   // Hard stop pitch threshold
-#define SAFETY_ESTOP_ROLL    40.0f   // Hard stop roll threshold
-#define SAFETY_LPF_BETA      0.90f   // Smoothing (higher = smoother)
+GPA0 → FL encoder CH_B
+GPA1 → FR encoder CH_B
+GPA2 → RL encoder CH_B
+GPA3 → RR encoder CH_B
 ```
 
-Increase `SAFETY_ESTOP_PITCH` if robot stops too early on gentle ramps.
-Decrease `SAFETY_LPF_BETA` if you want faster response to terrain changes.
+This adds full quadrature counting for accurate odometry and SLAM.
 
 ---
 
-## 9. Troubleshooting
+## 11. Troubleshooting
 
-| Symptom | Likely Cause | Fix |
-|---------|-------------|-----|
+| Symptom | Cause | Fix |
+|---------|-------|-----|
 | LCD stuck on CALIB | micro-ROS agent not running | Start agent on RPi first |
-| No topics on RPi | UART wiring wrong | Swap D0/D1 wires |
-| Motors don't move | PCA9685 not responding | Check I2C wiring, confirm A0-A5 = GND |
-| One motor wrong direction | Mirror-mount polarity | Change MOTOR_POLARITY in motor.c |
-| Encoder counts don't change | Timer not in encoder mode | Recheck CubeMX TIM config |
-| IMU init fails | I2C address conflict or wiring | Check AD0=GND on ICM-20948 |
-| Robot stops immediately | Safety E-stop triggering | Place robot flat, re-flash |
-| Speed always low | Terrain risk high on flat surface | Re-run calibration on flat surface |
-
----
-
-## 10. SLAM with Nav2
-
-Once manual control works:
-```bash
-# Terminal 1 — micro-ROS agent
-ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/stm32 -b 2000000
-
-# Terminal 2 — SLAM
-ros2 launch slam_toolbox online_async_launch.py
-
-# Terminal 3 — Nav2
-ros2 launch nav2_bringup navigation_launch.py
-
-# Terminal 4 — RViz
-ros2 run rviz2 rviz2
-```
-
-Nav2 publishes `/cmd_vel` automatically. The STM32 safety layer will
-reduce speed on slopes and E-stop if pitch > 30° — all transparent to Nav2.
+| No /topics on RPi | UART wiring wrong | Swap D0/D1 wires |
+| Motors don't move | BTS7960 EN pins | Tie R_EN + L_EN to 3.3V |
+| Motor runs one direction only | RPWM/LPWM swapped | Swap A4↔A5 or A2↔A3 |
+| Encoder not counting | Pull-down missing | Set GPIO Pull-Down in CubeMX |
+| IMU init fails | I2C wiring | Check CN2 pin 1=SDA, pin 3=SCL |
+| Speed always 0 | EXTI not enabled | Enable NVIC in CubeMX |
+| Robot tips and stops | Safety E-stop | Place flat, recalibrate |
