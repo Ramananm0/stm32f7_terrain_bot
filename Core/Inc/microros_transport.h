@@ -1,9 +1,9 @@
 /**
- * microros_transport.h  —  micro-ROS UART transport declarations
+ * microros_transport.h — micro-ROS UART transport declarations
  *
- * USART6:  PG14 = TX    PG9 = RX    2 Mbaud
- * Physical: PG14 → cable RX (white),  PG9 → cable TX (green),  GND → GND (black)
- * Connect USB end of cable to Raspberry Pi, then run:
+ * USART6: PC6 = TX, PC7 = RX, 2 Mbaud
+ * Physical: PC6/D1 → USB-TTL RX, PC7/D0 → USB-TTL TX, GND → GND
+ * Connect the USB end of the TTL cable to the Raspberry Pi and run:
  *   ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/stm32 -b 2000000
  */
 #ifndef MICROROS_TRANSPORT_H
