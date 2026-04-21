@@ -5,8 +5,15 @@
  * ── Voltage protection ───────────────────────────────────────────────
  *   Battery: 12.4V nominal, up to 14V fully charged
  *   Motor rated: 12V (RMCS-3070)
- *   Max safe duty: 12V / 14V × ARR = 85.7% × 10799 = 9255
- *   This limits effective voltage to 12V at full speed.
+ *   Duty cap = 12V / 14V = 85.7%
+ *
+ *   APB2 timers:
+ *     TIM10 / TIM11  ARR = 10799  max CCR = 9254
+ *
+ *   APB1 timers:
+ *     TIM2 / TIM3 / TIM12 / TIM13 / TIM14  ARR = 5399  max CCR = 4626
+ *
+ *   This limits effective motor voltage to about 12V at full battery charge.
  *
  * ── Soft start ───────────────────────────────────────────────────────
  *   PWM ramps from current duty to target over RAMP_MS milliseconds.
@@ -20,17 +27,20 @@
  *   RIS  → not connected
  *   LIS  → not connected
  *
- * ── Pin assignment (all Arduino header) ──────────────────────────────
- *   FL: RPWM=A4(PF7/TIM11_CH1)  LPWM=A5(PF6/TIM10_CH1)
- *   FR: RPWM=A2(PF9/TIM14_CH1)  LPWM=A3(PF8/TIM13_CH1)
- *   RL: RPWM=D6(PH6/TIM12_CH1)  LPWM=D11(PB15/TIM12_CH2)
- *   RR: RPWM=D10(PA8/TIM1_CH1)  LPWM=D3(PB4/TIM3_CH1)
+ * ── Pin assignment ───────────────────────────────────────────────────
+ *   FL: RPWM=PF7 (TIM11_CH1)  LPWM=PF6  (TIM10_CH1)
+ *   FR: RPWM=PF9 (TIM14_CH1)  LPWM=PF8  (TIM13_CH1)
+ *   RL: RPWM=PH6 (TIM12_CH1)  LPWM=PB15 (TIM12_CH2)
+ *   RR: RPWM=PA15(TIM2_CH1)   LPWM=PB4  (TIM3_CH1)
  *
  * ── CubeMX settings ──────────────────────────────────────────────────
- *   TIM10/11/13/14: PWM CH1, PSC=0, ARR=10799, Mode1, High
- *   TIM12: PWM CH1+CH2, PSC=0, ARR=10799, Mode1, High
- *   TIM1:  PWM CH1 only, PSC=0, ARR=10799, Mode1, High
- *   TIM3:  PWM CH1 only, PSC=0, ARR=10799, Mode1, High
+ *   TIM10: PWM CH1, PSC=0, ARR=10799, Mode1, High
+ *   TIM11: PWM CH1, PSC=0, ARR=10799, Mode1, High
+ *   TIM2 : PWM CH1, PSC=0, ARR=5399,  Mode1, High
+ *   TIM3 : PWM CH1, PSC=0, ARR=5399,  Mode1, High
+ *   TIM12: PWM CH1+CH2, PSC=0, ARR=5399, Mode1, High
+ *   TIM13: PWM CH1, PSC=0, ARR=5399,  Mode1, High
+ *   TIM14: PWM CH1, PSC=0, ARR=5399,  Mode1, High
  */
 
 #ifndef MOTOR_H
@@ -52,16 +62,16 @@ typedef enum {
 #define MOTOR_MAX_SPEED_MMPS   44.5f
 
 /* ── PWM constants ───────────────────────────────────────────────── */
-/* PSC=0, ARR=10799 → 216MHz/10800 = 20kHz                           */
-#define MOTOR_PWM_ARR          10799u
+#define MOTOR_PWM_ARR_APB2     10799u
+#define MOTOR_PWM_ARR_APB1      5399u
 
 /* ── Voltage protection ──────────────────────────────────────────── */
-/* Battery max 14V, motor rated 12V                                   */
-/* Max duty = 12/14 × 10799 = 9256                                   */
 #define MOTOR_BATTERY_MAX_V    14.0f
 #define MOTOR_RATED_V          12.0f
-#define MOTOR_MAX_DUTY         ((uint32_t)(MOTOR_PWM_ARR * \
-                                 (MOTOR_RATED_V / MOTOR_BATTERY_MAX_V)))
+
+/* Safe integer caps matching 85.7% */
+#define MOTOR_MAX_DUTY_APB2    9254u
+#define MOTOR_MAX_DUTY_APB1    4626u
 
 /* ── Soft start ──────────────────────────────────────────────────── */
 /* Ramp time in ms — duty changes by max RAMP_STEP per PID cycle     */
@@ -81,7 +91,7 @@ void Motor_Init(TIM_HandleTypeDef *htim10,
                 TIM_HandleTypeDef *htim12,
                 TIM_HandleTypeDef *htim13,
                 TIM_HandleTypeDef *htim14,
-                TIM_HandleTypeDef *htim1,
+                TIM_HandleTypeDef *htim2,
                 TIM_HandleTypeDef *htim3);
 
 /**
