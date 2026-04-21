@@ -1,8 +1,8 @@
 # STM32F746G-DISCO Terrain Rover Firmware
 
 Real-time motion controller for a four-wheel skid-steer terrain rover.
-The STM32 handles all safety logic, motor control, and ROS communication.
-An ESP32 co-processor handles all four wheel encoders via hardware PCNT.
+The STM32 handles all safety logic, motor control, LCD, and communication.
+An ESP32 co-processor handles all four wheel encoders via hardware PCNT over I2C.
 
 ---
 
@@ -12,48 +12,60 @@ An ESP32 co-processor handles all four wheel encoders via hardware PCNT.
 ┌─────────────────────────────────────────────────────────┐
 │           STM32F746G-DISCO  (master controller)         │
 │                                                         │
-│  ICM-20948 IMU  ←── I2C1 (PB8/PB9) ──→ ESP32 (0x30)  │
-│  Safety layer   ←── Madgwick AHRS @ 100Hz              │
+│  Encoder ESP32  ←── I2C1 (PB8/PB9) @ 400 kHz          │
 │  4× BTS7960     ←── 8 PWM pins (4WD individual)        │
-│  micro-ROS      ←── USART6 PC6/PC7 → Raspberry Pi      │
+│  USART6         ←── PG14/PG9 @ 115200 baud             │
 │  LCD dashboard  ←── LTDC built-in 480×272               │
+│  SDRAM FB       ←── FMC SDRAM @ 0xC0000000              │
 └─────────────────────────────────────────────────────────┘
              │ I2C1 shared bus (400kHz)
-    ┌────────┴────────┐
-    │                 │
-┌───▼────┐     ┌──────▼──────────────────────┐
-│ICM-    │     │ ESP32-WROOM  I2C slave 0x30 │
-│20948   │     │ PCNT FL/FR/RL/RR quadrature │
-│0x68    │     │ → ticks + velocity → STM32  │
-└────────┘     └─────────────────────────────┘
+             │
+    ┌────────▼──────────────────────┐
+    │ ESP32-WROOM  I2C slave 0x30   │
+    │ PCNT FL/FR/RL/RR quadrature   │
+    │ → ticks + velocity → STM32    │
+    └───────────────────────────────┘
 ```
 
 ---
 
 ## Hardware
 
-### I2C Bus (shared)
+### I2C Bus
 ```
-STM32 PB8 (D15/CN2 pin3) = SCL  ──→ ICM-20948 SCL + ESP32 GPIO22
-STM32 PB9 (D14/CN2 pin1) = SDA  ──→ ICM-20948 SDA + ESP32 GPIO21
-Pull-ups: 4.7kΩ on SDA and SCL to 3.3V
-```
-
-### Motor PWM (all Arduino header, 20 kHz)
-```
-Motor   RPWM (forward)          LPWM (reverse)
-─────   ──────────────────────  ──────────────────────
-FL      A4  (PF7 / TIM11_CH1)  A5  (PF6 / TIM10_CH1)
-FR      A2  (PF9 / TIM14_CH1)  A3  (PF8 / TIM13_CH1)
-RL      D6  (PH6 / TIM12_CH1)  D11 (PB15/ TIM12_CH2)
-RR      D10 (PA8 / TIM1_CH1 )  D3  (PB4 / TIM3_CH1 )
+STM32 PB8 = I2C1_SCL  ──→ ESP32 encoder slave SCL
+STM32 PB9 = I2C1_SDA  ──→ ESP32 encoder slave SDA
+Bus speed : 400 kHz
+ESP32 addr: 0x30
 ```
 
-### Voltage Protection (12V motors, 14V battery max)
+### Motor PWM (final CubeMX mapping, 20 kHz on all channels)
 ```
-Max PWM duty = 12V/14V × 10799 = 9256  (85.7%)
-Motor always sees ≤ 12V regardless of battery charge state.
-Soft start ramp: 200 counts per 10ms → full speed in ~460ms.
+Motor   RPWM (forward)            LPWM (reverse)
+─────   ───────────────────────   ───────────────────────
+FL      PF7  / TIM11_CH1          PF6  / TIM10_CH1
+FR      PF9  / TIM14_CH1          PF8  / TIM13_CH1
+RL      PH6  / TIM12_CH1          PB15 / TIM12_CH2
+RR      PA15 / TIM2_CH1           PB4  / TIM3_CH1
+```
+
+### PWM Frequency Configuration
+```
+APB2 timers (216 MHz timer clock)
+  TIM10, TIM11  : PSC = 0, ARR = 10799  → 20 kHz
+
+APB1 timers (108 MHz timer clock)
+  TIM2, TIM3, TIM12, TIM13, TIM14 : PSC = 0, ARR = 5399 → 20 kHz
+```
+
+### Voltage Protection (12V motors, battery up to ~14V)
+```
+Duty cap = 12 / 14 = 0.857 = 85.7%
+
+TIM10 / TIM11 max compare = 10799 × 0.857 = 9254
+TIM2 / TIM3 / TIM12 / TIM13 / TIM14 max compare = 5399 × 0.857 = 4626
+
+This keeps effective motor voltage at or below ~12V even near full battery charge.
 ```
 
 ### BTS7960 wiring (per motor)
@@ -62,7 +74,7 @@ RPWM → PWM forward pin   R_EN → 3.3V (tie HIGH)
 LPWM → PWM reverse pin   L_EN → 3.3V (tie HIGH)
 VCC  → 5V                GND  → common GND
 RIS  → not connected      LIS  → not connected
-B+/B-→ motor terminals   M+/M-→ 12V battery
+B+/B-→ motor terminals   M+/M-→ battery supply
 ```
 
 ### RMCS-3070 encoder cable
@@ -72,13 +84,11 @@ Green → CH_A    White → CH_B
 Yellow→ Motor+  Blue  → Motor-
 ```
 
-### UART to Raspberry Pi
+### USART6
 ```
-STM32 D1 (PC6) TX → USB-TTL white wire (RXD)
-STM32 D0 (PC7) RX → USB-TTL green wire (TXD)
-STM32 GND      → USB-TTL black wire (GND)
-Red wire       → DO NOT CONNECT
-Baud rate: 2,000,000
+STM32 PG14 = USART6_TX
+STM32 PG9  = USART6_RX
+Baud rate  = 115200
 ```
 
 ---
@@ -116,92 +126,95 @@ STM32 writes 4 bytes:
 
 ```
 Startup:
-  LCD_Init → ICM20948_Init → Encoder_Init(I2C)
-  → Motor_Init(7 timers) → Madgwick_Init
-  → uros_setup (blocks until RPi agent)
-  → Gyro calibration 200 samples ~2s (keep still!)
-  → Seed Madgwick from accel
+  LCD_Init → Encoder_Init(I2C)
+  → Motor_Init(7 timers)
+  → comms init
 
 Main loop tasks:
-  100Hz  IMU read → Madgwick AHRS → Safety layer
-         risk R = f(pitch, roll, accel shake)
-         scale = (1-R)²   E-stop if pitch>30° or roll>40°
-
   50Hz   Encoder_Update() → I2C read 32 bytes from ESP32
 
-  100Hz  Per-motor PI:
-         error = target×scale - encoder_vel
-         PWM = target + KP×error + KI×integral
-
-  100Hz  Publish /imu/data
-
-  50Hz   Publish /wheel_ticks + /wheel_velocity
+  100Hz  Per-motor control:
+         error = target - encoder_vel
+         PWM = command + KP×error + KI×integral
+         clamp to per-timer max compare values
 
   10Hz   LCD_Display_Update()
-
-  cont.  rclc_executor_spin_some() → process /cmd_vel
 
 cmd_vel kinematics:
   v_left  = linear.x×1000 − angular.z × wheelbase/2
   v_right = linear.x×1000 + angular.z × wheelbase/2
   FL=RL=v_left   FR=RR=v_right  (skid-steer)
 
-Watchdog: 500ms without /cmd_vel → Motor_StopAll()
+Watchdog: timeout without command → Motor_StopAll()
 ```
 
 ---
 
-## micro-ROS Topics
+## Communication Topics / Interfaces
 
-| Topic | Type | Rate | Direction |
-|-------|------|------|-----------|
-| `/imu/data` | `sensor_msgs/Imu` | 100 Hz | STM32 → RPi |
-| `/wheel_ticks` | `std_msgs/Int32MultiArray` | 50 Hz | STM32 → RPi |
-| `/wheel_velocity` | `std_msgs/Float32MultiArray` | 50 Hz | STM32 → RPi |
-| `/cmd_vel` | `geometry_msgs/Twist` | on demand | RPi → STM32 |
+| Interface | Purpose | Direction |
+|----------|---------|-----------|
+| `I2C1` | Encoder data exchange with ESP32 | STM32 ↔ ESP32 |
+| `USART6` | Host / ROS / debug communication | STM32 ↔ external host |
+| `LTDC + FMC SDRAM` | LCD framebuffer output | STM32 → LCD |
 
 ---
 
-## CubeMX Configuration
+## Final CubeMX Configuration
 
 ```
-I2C1   : PB8(SCL) PB9(SDA)  Fast Mode 400kHz
-USART6 : PC6(TX)  PC7(RX)   2000000 baud 8N1 no flow ctrl
+Clock:
+  HSE bypass 25MHz → PLL → SYSCLK 216MHz
+  APB1 = 54MHz
+  APB2 = 108MHz
 
-TIM10  : PWM CH1  PF6(A5)   PSC=0 ARR=10799  FL LPWM
-TIM11  : PWM CH1  PF7(A4)   PSC=0 ARR=10799  FL RPWM
-TIM12  : PWM CH1  PH6(D6)   PSC=0 ARR=10799  RL RPWM
-         PWM CH2  PB15(D11) PSC=0 ARR=10799  RL LPWM
-TIM13  : PWM CH1  PF8(A3)   PSC=0 ARR=10799  FR LPWM
-TIM14  : PWM CH1  PF9(A2)   PSC=0 ARR=10799  FR RPWM
-TIM1   : PWM CH1  PA8(D10)  PSC=0 ARR=10799  RR RPWM
-TIM3   : PWM CH1  PB4(D3)   PSC=0 ARR=10799  RR LPWM
+USART6:
+  PG14(TX) / PG9(RX)
+  115200 baud
 
-Clock: HSE bypass 25MHz → PLL M=25 N=432 P=2 → 216MHz
+I2C1:
+  PB8(SCL) / PB9(SDA)
+  400kHz
+
+PWM:
+  TIM11_CH1 → PF7   FL RPWM   PSC=0 ARR=10799
+  TIM10_CH1 → PF6   FL LPWM   PSC=0 ARR=10799
+  TIM14_CH1 → PF9   FR RPWM   PSC=0 ARR=5399
+  TIM13_CH1 → PF8   FR LPWM   PSC=0 ARR=5399
+  TIM12_CH1 → PH6   RL RPWM   PSC=0 ARR=5399
+  TIM12_CH2 → PB15  RL LPWM   PSC=0 ARR=5399
+  TIM2_CH1  → PA15  RR RPWM   PSC=0 ARR=5399
+  TIM3_CH1  → PB4   RR LPWM   PSC=0 ARR=5399
+
+FMC SDRAM:
+  Bank1, 8 column, 12 row, CAS 3, 16-bit
+
+LTDC:
+  RGB565, 480×272
+  framebuffer = 0xC0000000
+
+Encoder:
+  ESP32 via I2C1 at address 0x30
 ```
 
 ---
 
 ## LCD Dashboard
 
-The built-in 4.3" display (480×272) shows live at 10 Hz:
+The built-in 4.3" display (480×272) shows live status information.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
-│ TERRAIN BOT v2.0   RISK[████░░] BAT~12.4V      [ RUN ]    │
+│ TERRAIN BOT        PWM / ENCODER / LINK STATUS            │
 ├───────────────────────┬────────────────────────────────────┤
-│ IMU ORIENTATION       │ MOTOR SPEEDS (mm/s)                │
-│ Roll  +012.3° ░░bar░░ │ FL ►[████████░░] +32.1            │
-│ Pitch -005.7° ░░bar░░ │ FR ►[████████░░] +31.8            │
-│ Yaw   +089.1° ░░bar░░ │ RL ►[████████░░] +32.0            │
-│                       │ RR ►[████████░░] +31.5            │
-│ ACCEL (m/s²)          │ PWM DUTY (max 85.7%)               │
-│ X+0.12 Y+0.05 Z+9.81  │ FL [░░░░░░░░░] FR [░░░░░░░░░]    │
+│ COMM STATUS           │ MOTOR SPEEDS                       │
+│ USART6 : OK           │ FL  value / duty / dir            │
+│ I2C1   : OK           │ FR  value / duty / dir            │
+│ ESP32  : 0x30         │ RL  value / duty / dir            │
+│                       │ RR  value / duty / dir            │
 ├───────────────────────┴────────────────────────────────────┤
-│ PITCH SAFETY  [████░░░░░░░░░░░░░░░░░░░░]  -005.7°         │
+│ DUTY CAPS: APB2=9254   APB1=4626                          │
 └────────────────────────────────────────────────────────────┘
-
-Green = safe/forward   Amber = caution >15°   Red = danger >25°/reverse
 ```
 
 ---
@@ -211,31 +224,25 @@ Green = safe/forward   Amber = caution >15°   Red = danger >25°/reverse
 ```
 Core/
 ├── Inc/
-│   ├── app.h              Entry point
-│   ├── encoder.h          ESP32 I2C encoder reader
-│   ├── icm20948.h         ICM-20948 9-DOF IMU driver
-│   ├── lcd_display.h      Dashboard API
-│   ├── madgwick.h         Madgwick AHRS filter
-│   ├── microros_transport.h  USART6 micro-ROS transport
-│   └── motor.h            4× BTS7960 4WD driver
+│   ├── app.h
+│   ├── encoder.h
+│   ├── lcd_display.h
+│   └── motor.h
 └── Src/
-    ├── app.c              Main loop, safety, PID, ROS
-    ├── encoder.c          I2C read from ESP32
-    ├── icm20948.c         IMU + magnetometer driver
-    ├── lcd_display.c      Graphical dashboard
-    ├── madgwick.c         Quaternion MARG/IMU filter
-    ├── microros_transport.c  UART callbacks
-    └── motor.c            PWM + voltage protection
+    ├── app.c
+    ├── encoder.c
+    ├── lcd_display.c
+    └── motor.c
 
 esp32/
-├── README.md              ESP32 wiring + build guide
-├── platformio.ini         PlatformIO config
+├── README.md
+├── platformio.ini
 └── src/
-    └── main.cpp           PCNT quadrature + I2C slave
+    └── main.cpp
 
-PIN_CONNECTIONS.txt        Complete wiring table
-SETUP_GUIDE.md             Step-by-step CubeMX + RPi setup
-README.md                  This file
+PIN_CONNECTIONS.txt
+SETUP_GUIDE.md
+README.md
 ```
 
 ---
@@ -244,10 +251,9 @@ README.md                  This file
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| LCD stuck on CALIB | micro-ROS agent not running | Start agent on RPi |
-| No topics on RPi | UART wiring reversed | Swap D0/D1 wires |
-| Motors spin wrong way | RPWM/LPWM swapped | Swap A4↔A5 or A2↔A3 |
-| Encoder all zero | ESP32 not responding | Check I2C pull-ups |
-| Motor overheats | PWM too high | Verify MOTOR_MAX_DUTY=9256 |
-| Robot stops randomly | Safety E-stop | Check IMU orientation |
-| I2C address clash | Wrong ESP32 addr | Confirm 0x30 in ESP32 code |
+| No encoder data | ESP32 not responding | Check I2C1 wiring and address `0x30` |
+| Motors spin wrong way | RPWM/LPWM swapped | Swap motor direction pins in wiring or software |
+| Motor overheats | PWM too high | Verify APB2 cap = `9254`, APB1 cap = `4626` |
+| Wrong PWM frequency | Same ARR used on all timers | Use `10799` for TIM10/11 and `5399` for TIM2/3/12/13/14 |
+| No host comms | USART6 pins mismatched | Verify PG14/PG9 and 115200 baud |
+| LCD corruption | SDRAM/LTDC config wrong | Recheck FMC SDRAM + framebuffer `0xC0000000` |
