@@ -1,33 +1,16 @@
 /**
  * app.c — STM32F746G-DISCO Terrain Bot  (4WD + ESP32 co-processor)
  *
- * ── Hardware ─────────────────────────────────────────────────────────
- *   ICM-20948 IMU    : I2C1 PB8(SCL/D15) PB9(SDA/D14) addr 0x68
- *   ESP32 encoders   : I2C1 same bus               addr 0x30
- *   USART6 micro-ROS : PC6(TX/D1) PC7(RX/D0)       2 Mbaud
+ * Final hardware map:
+ *   ESP32 encoders   : I2C1 PB8(SCL) PB9(SDA)       addr 0x30
+ *   USART6 host link : PG14(TX) PG9(RX)             115200 baud
  *   LCD dashboard    : LTDC built-in 480×272
- *   Battery          : 12.4V nominal (14V max) → PWM limited to 85.7%
  *
  *   4× BTS7960 (one per motor, 2 PWM pins each):
- *     FL: RPWM=A4(PF7/TIM11) LPWM=A5(PF6/TIM10)
- *     FR: RPWM=A2(PF9/TIM14) LPWM=A3(PF8/TIM13)
- *     RL: RPWM=D6(PH6/TIM12_CH1) LPWM=D11(PB15/TIM12_CH2)
- *     RR: RPWM=D10(PA8/TIM1_CH1) LPWM=D3(PB4/TIM3_CH1)
- *
- *   4× ESP32 PCNT encoders (full quadrature via I2C):
- *     FL: GPIO4+GPIO5   FR: GPIO12+GPIO13
- *     RL: GPIO14+GPIO15 RR: GPIO33+GPIO32
- *
- * ── CubeMX peripherals ───────────────────────────────────────────────
- *   I2C1  : PB8/PB9  400kHz Fast Mode
- *   USART6: PC6/PC7  2000000 baud 8N1
- *   TIM10 : PWM CH1  PF6(A5)   PSC=0 ARR=10799
- *   TIM11 : PWM CH1  PF7(A4)   PSC=0 ARR=10799
- *   TIM12 : PWM CH1+CH2 PH6(D6)+PB15(D11) PSC=0 ARR=10799
- *   TIM13 : PWM CH1  PF8(A3)   PSC=0 ARR=10799
- *   TIM14 : PWM CH1  PF9(A2)   PSC=0 ARR=10799
- *   TIM1  : PWM CH1  PA8(D10)  PSC=0 ARR=10799
- *   TIM3  : PWM CH1  PB4(D3)   PSC=0 ARR=10799
+ *     FL: RPWM=PF7(TIM11)      LPWM=PF6(TIM10)
+ *     FR: RPWM=PF9(TIM14)      LPWM=PF8(TIM13)
+ *     RL: RPWM=PH6(TIM12_CH1)  LPWM=PB15(TIM12_CH2)
+ *     RR: RPWM=PA15(TIM2_CH1)  LPWM=PB4(TIM3_CH1)
  */
 
 #include "app.h"
@@ -55,7 +38,7 @@
 
 /* ── HAL handles ─────────────────────────────────────────────────── */
 extern I2C_HandleTypeDef  hi2c1;
-extern TIM_HandleTypeDef  htim1;
+extern TIM_HandleTypeDef  htim2;
 extern TIM_HandleTypeDef  htim3;
 extern TIM_HandleTypeDef  htim10;
 extern TIM_HandleTypeDef  htim11;
@@ -132,6 +115,8 @@ static float g_scale = 1.0f;
 static float    g_tgt[MOTOR_NUM]      = {0};
 static float    g_intg[MOTOR_NUM]     = {0};
 static uint32_t g_cmd_ms              = 0;
+static uint8_t  g_enc_ok              = 0;
+static uint8_t  g_host_ok             = 0;
 
 /* ── cmd_vel callback ────────────────────────────────────────────── */
 static void cmd_cb(const void *msg_in)
@@ -152,6 +137,7 @@ static void cmd_cb(const void *msg_in)
     g_tgt[MOTOR_FR] = vr;
     g_tgt[MOTOR_RR] = vr;
     g_cmd_ms = HAL_GetTick();
+    g_host_ok = 1u;
 }
 
 /* ── Safety layer ────────────────────────────────────────────────── */
@@ -182,14 +168,17 @@ static void update_safety(void)
     if (rr > 1.0f) rr = 1.0f;
 
     g_risk  = S_LPF*g_risk + (1.0f-S_LPF)*rr;
-    float s = 1.0f - g_risk;
-    g_scale = s * s;
+    {
+        float s = 1.0f - g_risk;
+        g_scale = s * s;
+    }
 }
 
 /* ── Motor PI (per motor) ────────────────────────────────────────── */
 static void motor_pid(float dt)
 {
-    for (int i = 0; i < MOTOR_NUM; i++) {
+    int i;
+    for (i = 0; i < MOTOR_NUM; i++) {
         float tgt  = g_tgt[i] * g_scale;
         float meas = Encoder_VelMmps((uint8_t)i);
         float err  = tgt - meas;
@@ -198,8 +187,7 @@ static void motor_pid(float dt)
         if (g_intg[i] >  MOTOR_ILIMIT) g_intg[i] =  MOTOR_ILIMIT;
         if (g_intg[i] < -MOTOR_ILIMIT) g_intg[i] = -MOTOR_ILIMIT;
 
-        float cmd = tgt + KP*err + KI*g_intg[i];
-        Motor_Set((Motor_ID)i, cmd);
+        Motor_Set((Motor_ID)i, tgt + KP*err + KI*g_intg[i]);
     }
 }
 
@@ -264,7 +252,8 @@ static void pub_imu_fn(void)
 
 static void pub_enc_fn(void)
 {
-    for (int i=0;i<MOTOR_NUM;i++){
+    int i;
+    for (i=0;i<MOTOR_NUM;i++){
         tick_buf[i]=(int32_t)Encoder_Ticks((uint8_t)i);
         vel_buf[i]=Encoder_VelMmps((uint8_t)i);
     }
@@ -275,14 +264,22 @@ static void pub_enc_fn(void)
 /* ── App entry ───────────────────────────────────────────────────── */
 void App_Run(void)
 {
+    uint32_t t_imu;
+    uint32_t t_enc;
+    uint32_t t_pid;
+    uint32_t t_pimu;
+    uint32_t t_penc;
+    uint32_t t_lcd;
+
     LCD_Display_Init();
 
     if (ICM20948_Init(&hi2c1) != HAL_OK) Error_Handler();
 
     Encoder_Init(&hi2c1);
+    g_enc_ok = 1u;
 
     Motor_Init(&htim10, &htim11, &htim12, &htim13,
-               &htim14, &htim1, &htim3);
+               &htim14, &htim2, &htim3);
 
     Madgwick_Init(&ahrs, MADGWICK_BETA);
 
@@ -291,7 +288,7 @@ void App_Run(void)
     /* Gyro calibration ~2s */
     memset(&calib, 0, sizeof(calib));
     while (!calib.done) {
-        LCD_Display_Update(&ahrs, 0, 0.0f, 0,0,0);
+        LCD_Display_Update(&ahrs, 0u, 0.0f, 0.0f, 0.0f, 0.0f, g_enc_ok, 0u);
         if (ICM20948_Read(&hi2c1, &imu) == HAL_OK)
             ICM20948_Calibrate(&imu, &calib, CALIB_N);
         HAL_Delay(IMU_MS);
@@ -302,20 +299,27 @@ void App_Run(void)
         float ax=imu.ax, ay=imu.ay, az=imu.az;
         float rn=1.0f/sqrtf(ax*ax+ay*ay+az*az);
         ax*=rn; ay*=rn; az*=rn;
-        float r=atan2f(ay,az), p=atan2f(-ax,sqrtf(ay*ay+az*az));
-        ahrs.q0=cosf(r/2)*cosf(p/2); ahrs.q1=sinf(r/2)*cosf(p/2);
-        ahrs.q2=cosf(r/2)*sinf(p/2); ahrs.q3=-sinf(r/2)*sinf(p/2);
+        {
+            float r=atan2f(ay,az), p=atan2f(-ax,sqrtf(ay*ay+az*az));
+            ahrs.q0=cosf(r/2)*cosf(p/2); ahrs.q1=sinf(r/2)*cosf(p/2);
+            ahrs.q2=cosf(r/2)*sinf(p/2); ahrs.q3=-sinf(r/2)*sinf(p/2);
+        }
         ahrs.initialised=true;
     }
 
     g_cmd_ms = HAL_GetTick();
 
-    uint32_t t_imu=HAL_GetTick(), t_enc=HAL_GetTick(),
-             t_pid=HAL_GetTick(), t_pimu=HAL_GetTick(),
-             t_penc=HAL_GetTick(), t_lcd=HAL_GetTick();
+    t_imu=HAL_GetTick();
+    t_enc=HAL_GetTick();
+    t_pid=HAL_GetTick();
+    t_pimu=HAL_GetTick();
+    t_penc=HAL_GetTick();
+    t_lcd=HAL_GetTick();
 
     while (1) {
         uint32_t now = HAL_GetTick();
+
+        g_host_ok = ((now - g_cmd_ms) <= WDG_MS) ? 1u : 0u;
 
         /* IMU + Madgwick + safety @ 100Hz */
         if (now - t_imu >= IMU_MS) {
@@ -337,13 +341,13 @@ void App_Run(void)
         /* Read encoders from ESP32 @ 50Hz */
         if (now - t_enc >= ENC_MS) {
             t_enc = now;
-            Encoder_Update();
+            g_enc_ok = (Encoder_Update() == HAL_OK) ? 1u : 0u;
         }
 
         /* Motor PID @ 100Hz */
         if (now - t_pid >= PID_MS) {
             float dt=(float)(now-t_pid)*0.001f; t_pid=now;
-            if (now - g_cmd_ms > WDG_MS) {
+            if (!g_host_ok) {
                 memset(g_tgt, 0, sizeof(g_tgt));
                 memset(g_intg,0, sizeof(g_intg));
                 Motor_StopAll();
@@ -365,8 +369,9 @@ void App_Run(void)
         /* LCD @ 10Hz */
         if (now - t_lcd >= LCD_MS) {
             t_lcd=now;
-            LCD_Display_Update(&ahrs, 1, g_risk,
-                               imu.ax, imu.ay, imu.az);
+            LCD_Display_Update(&ahrs, 1u, g_risk,
+                               imu.ax, imu.ay, imu.az,
+                               g_enc_ok, g_host_ok);
         }
 
         rclc_executor_spin_some(&exec, RCL_MS_TO_NS(0));
