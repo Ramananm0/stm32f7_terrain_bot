@@ -12,14 +12,14 @@
 #define BACK_Y 230
 #define BACK_W 126
 #define BACK_H 34
-#define IMU_X 76
-#define IMU_Y 94
-#define IMU_W 140
-#define IMU_H 60
-#define MOTOR_BTN_X 264
-#define MOTOR_BTN_Y 94
-#define MOTOR_BTN_W 140
-#define MOTOR_BTN_H 60
+#define IMU_X 356
+#define IMU_Y 82
+#define IMU_W 104
+#define IMU_H 42
+#define MOTOR_BTN_X 356
+#define MOTOR_BTN_Y 134
+#define MOTOR_BTN_W 104
+#define MOTOR_BTN_H 42
 
 typedef enum {
     LCD_PAGE_HOME = 0,
@@ -47,7 +47,7 @@ static void draw_button(uint16_t x, uint16_t y, uint16_t w, uint16_t h, const ch
     BSP_LCD_SetTextColor(LCD_COLOR_DARKGRAY);
     BSP_LCD_DrawRect(x, y, w, h);
     BSP_LCD_SetFont(&Font16);
-    draw_text((int)(x + 18U), (int)(y + 20U), label, LCD_COLOR_WHITE);
+    draw_text((int)(x + 14U), (int)(y + 12U), label, LCD_COLOR_WHITE);
 }
 
 static uint32_t risk_color(float risk, uint8_t emergency_stop)
@@ -95,8 +95,16 @@ static void draw_static(void)
 
     if (g_page == LCD_PAGE_HOME) {
         draw_text(8, 42, "DASHBOARD", LCD_COLOR_WHITE);
+        BSP_LCD_SetTextColor(LCD_COLOR_DARKGRAY);
+        BSP_LCD_DrawRect(8, 74, 326, 140);
+        BSP_LCD_SetFont(&Font12);
+        draw_text(16, 82, "Connections", LCD_COLOR_LIGHTGRAY);
         draw_button(IMU_X, IMU_Y, IMU_W, IMU_H, "IMU");
         draw_button(MOTOR_BTN_X, MOTOR_BTN_Y, MOTOR_BTN_W, MOTOR_BTN_H, "MOTOR");
+        BSP_LCD_SetTextColor(LCD_COLOR_DARKGRAY);
+        BSP_LCD_DrawRect(352, 186, 116, 28);
+        BSP_LCD_SetFont(&Font12);
+        draw_text(360, 194, "Status", LCD_COLOR_LIGHTGRAY);
     } else if (g_page == LCD_PAGE_IMU) {
         draw_text(8, 42, "IMU DATA", LCD_COLOR_WHITE);
         draw_button(BACK_X, BACK_Y, BACK_W, BACK_H, "< BACK");
@@ -132,6 +140,7 @@ void LCD_Display_Update(const Madgwick_t *ahrs,
                         uint8_t emergency_stop,
                         uint8_t imu_ok,
                         uint8_t enc_ok,
+                        uint8_t ros_ok,
                         uint8_t host_ok)
 {
     char buf[64];
@@ -153,10 +162,34 @@ void LCD_Display_Update(const Madgwick_t *ahrs,
     BSP_LCD_SetFont(&Font12);
 
     if (g_page == LCD_PAGE_HOME) {
-        clear_area(120, 178, 250, 34);
-        snprintf(buf,sizeof(buf),"Risk %.2f  IMU:%s ENC:%s",
-                 risk, imu_ok ? "OK" : "FAIL", enc_ok ? "OK" : "FAIL");
-        draw_text(128, 188, buf, col);
+        clear_area(18, 94, 306, 114);
+        clear_area(358, 202, 102, 10);
+        clear_area(300, 42, 168, 24);
+        BSP_LCD_SetTextColor(col);
+        BSP_LCD_FillRect(300, 42, 168, 22);
+        BSP_LCD_SetFont(&Font12);
+        BSP_LCD_SetBackColor(col);
+        draw_text(310, 48, risk_label(risk, emergency_stop), LCD_COLOR_BLACK);
+        BSP_LCD_SetBackColor(LCD_COLOR_BLACK);
+
+        snprintf(buf,sizeof(buf),"IMU   : %s", imu_ok ? "CONNECTED" : "NOT CONNECTED");
+        draw_text(18, 96, buf, imu_ok ? LCD_COLOR_GREEN : LCD_COLOR_RED);
+        snprintf(buf,sizeof(buf),"ROS   : %s", ros_ok ? "CONNECTED" : "WAITING");
+        draw_text(18, 118, buf, ros_ok ? LCD_COLOR_GREEN : LCD_COLOR_YELLOW);
+        snprintf(buf,sizeof(buf),"ESP32 : %s", enc_ok ? "CONNECTED" : "NOT CONNECTED");
+        draw_text(18, 140, buf, enc_ok ? LCD_COLOR_GREEN : LCD_COLOR_RED);
+        snprintf(buf,sizeof(buf),"TERRAIN: %s", risk_label(risk, emergency_stop));
+        draw_text(18, 162, buf, col);
+        snprintf(buf,sizeof(buf),"Risk %.2f", risk);
+        draw_text(18, 184, buf, col);
+        BSP_LCD_SetTextColor(LCD_COLOR_DARKGRAY);
+        BSP_LCD_DrawRect(92, 184, 218, 14);
+        BSP_LCD_SetTextColor(LCD_COLOR_BLACK);
+        BSP_LCD_FillRect(93, 185, 216, 12);
+        BSP_LCD_SetTextColor(col);
+        BSP_LCD_FillRect(93, 185, (uint16_t)(216.0f * risk), 12);
+        draw_text(358, 202, host_ok ? "CMD OK" : "NO CMD",
+                  host_ok ? LCD_COLOR_GREEN : LCD_COLOR_YELLOW);
         return;
     }
 

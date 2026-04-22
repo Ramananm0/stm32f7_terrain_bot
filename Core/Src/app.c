@@ -118,6 +118,7 @@ static uint32_t g_cmd_ms              = 0;
 static uint8_t  g_enc_ok              = 0;
 static uint8_t  g_host_ok             = 0;
 static uint8_t  g_imu_ok              = 0;
+static uint8_t  g_ros_ok              = 0;
 static uint8_t  g_emergency_stop      = 0;
 
 /* ── cmd_vel callback ────────────────────────────────────────────── */
@@ -198,11 +199,19 @@ static void motor_pid(float dt)
 /* ── micro-ROS setup ─────────────────────────────────────────────── */
 static void uros_setup(void)
 {
+    g_ros_ok = 0u;
     rmw_uros_set_custom_transport(true, NULL,
         transport_open, transport_close,
         transport_write, transport_read);
     alloc = rcutils_get_default_allocator();
-    while (rmw_uros_ping_agent(200,10) != RMW_RET_OK) HAL_Delay(200);
+    for (uint8_t i = 0; i < 5u; i++) {
+        if (rmw_uros_ping_agent(200,1) == RMW_RET_OK) {
+            g_ros_ok = 1u;
+            break;
+        }
+        HAL_Delay(100);
+    }
+    if (!g_ros_ok) return;
 
     UROS_OK(rclc_support_init(&support, 0, NULL, &alloc));
     UROS_OK(rclc_node_init_default(&node,"stm32f7_node","terrain_bot",&support));
@@ -241,6 +250,7 @@ static void uros_setup(void)
 static void pub_imu_fn(void)
 {
     uint64_t ns=(uint64_t)HAL_GetTick()*1000000ULL;
+    if (!g_ros_ok || !g_imu_ok) return;
     msg_imu.header.stamp.sec=(int32_t)(ns/1000000000ULL);
     msg_imu.header.stamp.nanosec=(uint32_t)(ns%1000000000ULL);
     msg_imu.orientation.w=ahrs.q0; msg_imu.orientation.x=ahrs.q1;
@@ -257,6 +267,7 @@ static void pub_imu_fn(void)
 static void pub_enc_fn(void)
 {
     int i;
+    if (!g_ros_ok || !g_enc_ok) return;
     for (i=0;i<MOTOR_NUM;i++){
         tick_buf[i]=(int32_t)Encoder_Ticks((uint8_t)i);
         vel_buf[i]=Encoder_VelMmps((uint8_t)i);
@@ -293,7 +304,7 @@ void App_Run(void)
     /* Gyro calibration ~2s */
     memset(&calib, 0, sizeof(calib));
     while (!calib.done) {
-        LCD_Display_Update(&ahrs, &imu, 0u, 0.0f, 0u, g_imu_ok, g_enc_ok, 0u);
+        LCD_Display_Update(&ahrs, &imu, 0u, 0.0f, 0u, g_imu_ok, g_enc_ok, g_ros_ok, 0u);
         if (ICM20948_Read(&hi2c1, &imu) == HAL_OK)
             ICM20948_Calibrate(&imu, &calib, CALIB_N);
         HAL_Delay(IMU_MS);
@@ -379,9 +390,11 @@ void App_Run(void)
             t_lcd=now;
             LCD_Display_Update(&ahrs, &imu, 1u, g_risk,
                                g_emergency_stop,
-                               g_imu_ok, g_enc_ok, g_host_ok);
+                               g_imu_ok, g_enc_ok, g_ros_ok, g_host_ok);
         }
 
-        rclc_executor_spin_some(&exec, RCL_MS_TO_NS(0));
+        if (g_ros_ok) {
+            rclc_executor_spin_some(&exec, RCL_MS_TO_NS(0));
+        }
     }
 }

@@ -14,6 +14,7 @@ void LCD_Display_Update(const Madgwick_t *ahrs,
                         uint8_t emergency_stop,
                         uint8_t imu_ok,
                         uint8_t enc_ok,
+                        uint8_t ros_ok,
                         uint8_t host_ok);
 
 #endif /* LCD_DISPLAY_H */
