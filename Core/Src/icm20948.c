@@ -6,29 +6,52 @@
 #include <math.h>
 #include <string.h>
 
-#define I2C_TO  10   /* ms */
+#define I2C_TO  50   /* ms */
+
+static uint8_t g_icm20948_addr = ICM20948_ADDR_68;
 
 /* ── Low-level helpers ───────────────────────────────────────────── */
 
 static HAL_StatusTypeDef bank(I2C_HandleTypeDef *h, uint8_t b)
 {
     uint8_t buf[2] = {REG_BANK_SEL, b};
-    return HAL_I2C_Master_Transmit(h, ICM20948_ADDR, buf, 2, I2C_TO);
+    return HAL_I2C_Master_Transmit(h, g_icm20948_addr, buf, 2, I2C_TO);
 }
 
 static HAL_StatusTypeDef wr(I2C_HandleTypeDef *h, uint8_t reg, uint8_t val)
 {
     uint8_t buf[2] = {reg, val};
-    return HAL_I2C_Master_Transmit(h, ICM20948_ADDR, buf, 2, I2C_TO);
+    return HAL_I2C_Master_Transmit(h, g_icm20948_addr, buf, 2, I2C_TO);
 }
 
 static HAL_StatusTypeDef rd(I2C_HandleTypeDef *h, uint8_t reg,
                              uint8_t *buf, uint16_t len)
 {
     HAL_StatusTypeDef s;
-    s = HAL_I2C_Master_Transmit(h, ICM20948_ADDR, &reg, 1, I2C_TO);
+    s = HAL_I2C_Master_Transmit(h, g_icm20948_addr, &reg, 1, I2C_TO);
     if (s != HAL_OK) return s;
-    return HAL_I2C_Master_Receive(h, ICM20948_ADDR, buf, len, I2C_TO);
+    return HAL_I2C_Master_Receive(h, g_icm20948_addr, buf, len, I2C_TO);
+}
+
+static HAL_StatusTypeDef detect(I2C_HandleTypeDef *h)
+{
+    const uint8_t addrs[] = {ICM20948_ADDR_68, ICM20948_ADDR_69};
+    uint8_t who = 0;
+
+    for (uint8_t i = 0; i < sizeof(addrs); i++) {
+        g_icm20948_addr = addrs[i];
+        if (HAL_I2C_IsDeviceReady(h, g_icm20948_addr, 3, I2C_TO) != HAL_OK) {
+            continue;
+        }
+        if (bank(h, 0x00) == HAL_OK &&
+            rd(h, B0_WHO_AM_I, &who, 1) == HAL_OK &&
+            who == 0xEA) {
+            return HAL_OK;
+        }
+    }
+
+    g_icm20948_addr = ICM20948_ADDR_68;
+    return HAL_ERROR;
 }
 
 /* Write one register inside AK09916 via ICM I2C master */
@@ -50,6 +73,9 @@ HAL_StatusTypeDef ICM20948_Init(I2C_HandleTypeDef *hi2c)
     uint8_t who;
 
     /* 1. Soft reset */
+    if (detect(hi2c) != HAL_OK)
+        return HAL_ERROR;
+
     bank(hi2c, 0x00);
     wr(hi2c, B0_PWR_MGMT_1, 0x80);   /* DEVICE_RESET */
     HAL_Delay(100);

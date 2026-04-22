@@ -18,7 +18,8 @@
 #include <stdbool.h>
 
 /* ── I2C address ─────────────────────────────────────── */
-#define ICM20948_ADDR       (0x68 << 1)   /* AD0=GND */
+#define ICM20948_ADDR_68    (0x68 << 1)   /* AD0=GND */
+#define ICM20948_ADDR_69    (0x69 << 1)   /* AD0=HIGH */
 
 /* ── Register map ────────────────────────────────────── */
 /* Bank select (any bank) */
