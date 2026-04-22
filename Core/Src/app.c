@@ -117,6 +117,8 @@ static float    g_intg[MOTOR_NUM]     = {0};
 static uint32_t g_cmd_ms              = 0;
 static uint8_t  g_enc_ok              = 0;
 static uint8_t  g_host_ok             = 0;
+static uint8_t  g_imu_ok              = 0;
+static uint8_t  g_emergency_stop      = 0;
 
 /* ── cmd_vel callback ────────────────────────────────────────────── */
 static void cmd_cb(const void *msg_in)
@@ -151,8 +153,10 @@ static void update_safety(void)
     if (pa >= S_ESTOP_P || ra >= S_ESTOP_R ||
         (pr > S_FLIP_RATE && ahrs.pitch > S_FLIP_P)) {
         g_risk = 1.0f; g_scale = 0.0f;
+        g_emergency_stop = 1u;
         Motor_StopAll(); return;
     }
+    g_emergency_stop = 0u;
 
     float tw  = S_W_PITCH*pa + S_W_ROLL*ra;
     float ri  = (tw - S_SAFE) / (S_CRIT - S_SAFE);
@@ -273,7 +277,8 @@ void App_Run(void)
 
     LCD_Display_Init();
 
-    if (ICM20948_Init(&hi2c1) != HAL_OK) Error_Handler();
+    g_imu_ok = (ICM20948_Init(&hi2c1) == HAL_OK) ? 1u : 0u;
+    if (!g_imu_ok) Error_Handler();
 
     Encoder_Init(&hi2c1);
     g_enc_ok = 1u;
@@ -288,7 +293,7 @@ void App_Run(void)
     /* Gyro calibration ~2s */
     memset(&calib, 0, sizeof(calib));
     while (!calib.done) {
-        LCD_Display_Update(&ahrs, 0u, 0.0f, 0.0f, 0.0f, 0.0f, g_enc_ok, 0u);
+        LCD_Display_Update(&ahrs, &imu, 0u, 0.0f, 0u, g_imu_ok, g_enc_ok, 0u);
         if (ICM20948_Read(&hi2c1, &imu) == HAL_OK)
             ICM20948_Calibrate(&imu, &calib, CALIB_N);
         HAL_Delay(IMU_MS);
@@ -325,6 +330,7 @@ void App_Run(void)
         if (now - t_imu >= IMU_MS) {
             float dt=(float)(now-t_imu)*0.001f; t_imu=now;
             if (ICM20948_Read(&hi2c1, &imu) == HAL_OK) {
+                g_imu_ok = 1u;
                 float gx=imu.gx-calib.gx_bias;
                 float gy=imu.gy-calib.gy_bias;
                 float gz=imu.gz-calib.gz_bias;
@@ -335,6 +341,8 @@ void App_Run(void)
                     Madgwick_UpdateIMU(&ahrs,gx,gy,gz,
                         imu.ax,imu.ay,imu.az,dt);
                 update_safety();
+            } else {
+                g_imu_ok = 0u;
             }
         }
 
@@ -369,9 +377,9 @@ void App_Run(void)
         /* LCD @ 10Hz */
         if (now - t_lcd >= LCD_MS) {
             t_lcd=now;
-            LCD_Display_Update(&ahrs, 1u, g_risk,
-                               imu.ax, imu.ay, imu.az,
-                               g_enc_ok, g_host_ok);
+            LCD_Display_Update(&ahrs, &imu, 1u, g_risk,
+                               g_emergency_stop,
+                               g_imu_ok, g_enc_ok, g_host_ok);
         }
 
         rclc_executor_spin_some(&exec, RCL_MS_TO_NS(0));
